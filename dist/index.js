@@ -3,8 +3,8 @@
  *
  * Full multi-channel memory integration:
  * - Pre-turn semantic recall (before_agent_start)
- * - Real-time turn capture (llm_output, before_agent_finalize, message_sent)
- * - Background session watcher
+ * - Real-time turn capture (agent_end, llm_output, before_agent_finalize, message_sent)
+ * - Multi-agent support & direct L0 turn sync
  */
 import { Type } from "@sinclair/typebox";
 import { TencentDBClient } from "./client.js";
@@ -76,6 +76,7 @@ const memoryPlugin = {
         // Track active prompts for turn pairing
         let activePrompt = "";
         const sessionPrompts = new Map();
+        const syncedTurnSignatures = new Set();
         // Start background session file & SQLite watcher
         const watcher = new OpenClawSessionWatcher(client, api.logger);
         watcher.start(3000);
@@ -153,43 +154,105 @@ const memoryPlugin = {
                 activePrompt = p.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
             }
         });
-        // ── 2. Turn Sync Hooks (llm_output, before_agent_finalize, agent_end) ──
+        // ── 2. Turn Sync Hooks ─────────────────────────────────────────────
         if (autoCapture) {
-            const handleTurnSync = async (event, ctx, hookName) => {
-                const sKey = event?.sessionKey || event?.sessionId || ctx?.sessionKey || "main";
-                const prompt = sessionPrompts.get(sKey) || activePrompt;
-                const answer = extractText(event?.finalAnswer ||
-                    event?.response ||
-                    event?.output ||
-                    event?.assistantTexts ||
-                    event?.text ||
-                    event?.content ||
-                    event?.message);
-                if (!prompt || !answer)
+            // Direct Turn Dispatcher
+            const dispatchTurn = async (user, assistant, origin, sessionKey = "main") => {
+                if (!user || !assistant)
                     return;
-                api.logger.info(`[openclaw-memory-tencentdb] [Hook: ${hookName}] Syncing turn to TencentDB (user: "${prompt.slice(0, 35)}...")`);
+                const cleanUser = user.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
+                const cleanAssistant = assistant.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
+                if (!cleanUser || !cleanAssistant)
+                    return;
+                const sig = `${cleanUser}:::${cleanAssistant}`;
+                if (syncedTurnSignatures.has(sig))
+                    return;
+                syncedTurnSignatures.add(sig);
+                api.logger.info(`[openclaw-memory-tencentdb] [${origin}] Syncing turn to TencentDB (user: "${cleanUser.slice(0, 35)}...")`);
                 try {
-                    await client.importTurn(`openclaw-${sKey}`, [
-                        { role: "user", content: prompt },
-                        { role: "assistant", content: answer },
+                    await client.importTurn(`openclaw-${sessionKey}`, [
+                        { role: "user", content: cleanUser },
+                        { role: "assistant", content: cleanAssistant },
                     ]);
-                    api.logger.info(`[openclaw-memory-tencentdb] [Hook: ${hookName}] Successfully synced turn to TencentDB L0!`);
-                    sessionPrompts.delete(sKey);
+                    api.logger.info(`[openclaw-memory-tencentdb] [${origin}] Successfully synced turn to TencentDB L0!`);
                 }
                 catch (err) {
-                    api.logger.warn(`[openclaw-memory-tencentdb] [Hook: ${hookName}] Sync failed: ${err.message || String(err)}`);
+                    api.logger.warn(`[openclaw-memory-tencentdb] [${origin}] Sync failed: ${err.message || String(err)}`);
                 }
             };
-            api.on("llm_output", (event, ctx) => handleTurnSync(event, ctx, "llm_output"));
-            api.on("before_agent_finalize", (event, ctx) => handleTurnSync(event, ctx, "before_agent_finalize"));
-            api.on("agent_end", (event, ctx) => handleTurnSync(event, ctx, "agent_end"));
-            api.on("message_sent", (event, ctx) => handleTurnSync(event, ctx, "message_sent"));
-            if (typeof api.registerHook === "function") {
-                try {
-                    api.registerHook("message:sent", (ctx) => handleTurnSync(ctx, ctx, "message:sent"));
+            // Hook 1: agent_end (native OpenClaw agent completion event)
+            api.on("agent_end", async (event, ctx) => {
+                const sKey = ctx?.sessionKey || event?.sessionKey || "main";
+                if (event?.messages && Array.isArray(event.messages) && event.messages.length > 0) {
+                    const recentMessages = event.messages.slice(-6);
+                    let lastUser = "";
+                    let lastAssistant = "";
+                    for (const msg of recentMessages) {
+                        if (!msg || typeof msg !== "object")
+                            continue;
+                        const role = String(msg.role || "").toLowerCase();
+                        let textContent = "";
+                        const content = msg.content;
+                        if (typeof content === "string")
+                            textContent = content;
+                        else if (Array.isArray(content)) {
+                            for (const b of content) {
+                                if (b && typeof b === "object" && typeof b.text === "string") {
+                                    textContent += (textContent ? "\n" : "") + b.text;
+                                }
+                            }
+                        }
+                        if (!textContent)
+                            continue;
+                        textContent = textContent.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
+                        if (!textContent)
+                            continue;
+                        if (role === "user" || role === "human") {
+                            lastUser = textContent;
+                        }
+                        else if (role === "assistant" || role === "model") {
+                            lastAssistant = textContent;
+                        }
+                    }
+                    if (lastUser && lastAssistant) {
+                        await dispatchTurn(lastUser, lastAssistant, "agent_end", sKey);
+                        return;
+                    }
                 }
-                catch { }
-            }
+                // Fallback using active prompt
+                const prompt = sessionPrompts.get(sKey) || activePrompt;
+                const answer = extractText(event?.finalAnswer || event?.response || event?.output || event?.assistantTexts || event?.text);
+                if (prompt && answer) {
+                    await dispatchTurn(prompt, answer, "agent_end:fallback", sKey);
+                }
+            });
+            // Hook 2: before_agent_finalize (Embedded / Webchat completion)
+            api.on("before_agent_finalize", async (event, ctx) => {
+                const sKey = ctx?.sessionKey || event?.sessionKey || "main";
+                const prompt = sessionPrompts.get(sKey) || activePrompt;
+                const answer = extractText(event?.finalAnswer || event?.response || event?.output);
+                if (prompt && answer) {
+                    await dispatchTurn(prompt, answer, "before_agent_finalize", sKey);
+                }
+            });
+            // Hook 3: llm_output (Low-level LLM completion event)
+            api.on("llm_output", async (event, ctx) => {
+                const sKey = ctx?.sessionKey || event?.sessionKey || "main";
+                const prompt = extractText(event?.prompt || event?.input) || sessionPrompts.get(sKey) || activePrompt;
+                const answer = extractText(event?.response || event?.output || event?.assistantTexts || event?.text);
+                if (prompt && answer) {
+                    await dispatchTurn(prompt, answer, "llm_output", sKey);
+                }
+            });
+            // Hook 4: message_sent
+            api.on("message_sent", async (event, ctx) => {
+                const sKey = ctx?.sessionKey || event?.sessionKey || "main";
+                const prompt = sessionPrompts.get(sKey) || activePrompt;
+                const answer = extractText(event?.content || event?.message || event?.text);
+                if (prompt && answer) {
+                    await dispatchTurn(prompt, answer, "message_sent", sKey);
+                }
+            });
         }
         // ── 3. Tools ────────────────────────────────────────────────────────
         // Tool 1: Conversation Search

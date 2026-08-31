@@ -3,8 +3,8 @@
  *
  * Full multi-channel memory integration:
  * - Pre-turn semantic recall (before_agent_start)
- * - Real-time turn capture (llm_output, before_agent_finalize, message_sent)
- * - Background session watcher
+ * - Real-time turn capture (agent_end, llm_output, before_agent_finalize, message_sent)
+ * - Multi-agent support & direct L0 turn sync
  */
 interface OpenClawPluginApi {
     config?: Record<string, any>;
