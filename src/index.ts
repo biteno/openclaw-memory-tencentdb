@@ -1,8 +1,10 @@
 /**
  * OpenClaw Remote TencentDB Agent Memory Plugin
  *
- * Combines prefetch recall before agent turns with an autonomous
- * session file watcher that syncs all conversation files to TencentDB.
+ * Full multi-channel memory integration:
+ * - Pre-turn semantic recall (before_agent_start)
+ * - Real-time turn capture (llm_output, before_agent_finalize, message_sent)
+ * - Background session watcher
  */
 
 import { Type } from "@sinclair/typebox";
@@ -32,11 +34,7 @@ interface OpenClawPluginApi {
     start: () => void | Promise<void>;
     stop?: () => void | Promise<void>;
   }): void;
-  registerCli?(cli: {
-    command: string;
-    description: string;
-    action: (args: any) => Promise<void>;
-  }): void;
+  registerHook?(name: string, handler: (ctx: any) => Promise<void> | void): void;
 }
 
 function resolvePluginConfig(api: OpenClawPluginApi): TencentDBConfig {
@@ -108,84 +106,146 @@ const memoryPlugin = {
       `[openclaw-memory-tencentdb] Plugin registered (core: ${pluginConfig.coreUrl || "default"}, import: ${pluginConfig.importUrl || "default"}, team: ${client.getTeamId()}, agent: ${client.getAgentId()}, userKey configured: ${Boolean(pluginConfig.userKey)})`,
     );
 
-    // Start background session file watcher immediately
+    // Track active prompts for turn pairing
+    let activePrompt = "";
+    const sessionPrompts = new Map<string, string>();
+
+    // Start background session file & SQLite watcher
     const watcher = new OpenClawSessionWatcher(client, api.logger);
     watcher.start(3000);
 
-    // ── 1. Auto-Recall Hook ────────────────────────────────────────────
-    if (autoRecall) {
-      const handleRecall = async (event: any, ctx: any) => {
-        const prompt = extractText(event?.prompt || event?.content || event?.message || event?.text);
-        if (!prompt) return;
+    // ── 1. Auto-Recall & Prompt Capture Hook ───────────────────────────
+    const handleRecall = async (event: any, ctx: any) => {
+      const prompt = extractText(event?.prompt || event?.content || event?.message || event?.text);
+      if (!prompt) return;
 
-        const cleanPrompt = prompt.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
-        if (cleanPrompt.length < 4) return;
+      const cleanPrompt = prompt.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
+      if (cleanPrompt) {
+        activePrompt = cleanPrompt;
+        const sKey = event?.sessionKey || event?.sessionId || ctx?.sessionKey || "main";
+        sessionPrompts.set(sKey, cleanPrompt);
+      }
 
-        // Skip trivial messages
-        if (/^(hi|hello|hey|ok|danke|thx|thanks|hallo|ja|nein|yes|no)$/i.test(cleanPrompt)) {
+      if (!autoRecall) return;
+      if (cleanPrompt.length < 4) return;
+      if (/^(hi|hello|hey|ok|danke|thx|thanks|hallo|ja|nein|yes|no)$/i.test(cleanPrompt)) {
+        return;
+      }
+
+      try {
+        const recalledSections: string[] = [];
+
+        // 1. Search conversation history (L0/L1)
+        try {
+          const convRes = await client.searchConversation(cleanPrompt, maxRecallResults);
+          const messages = convRes?.data?.messages || [];
+          const validMessages = messages.filter((m) => (m.score ?? 1) >= scoreThreshold && m.content);
+
+          if (validMessages.length > 0) {
+            const lines = validMessages.map((m) => {
+              const clean = m.content.trim();
+              const snippet = clean.length > 300 ? `${clean.slice(0, 297)}...` : clean;
+              return `- ${snippet}`;
+            });
+            recalledSections.push(`### Relevante Gesprächserinnerungen (TencentDB):\n${lines.join("\n")}`);
+          }
+        } catch (err: any) {
+          api.logger.warn(`[openclaw-memory-tencentdb] Conversation search failed: ${err.message || String(err)}`);
+        }
+
+        // 2. Search skills / distilled knowledge
+        try {
+          const skillRes = await client.searchSkills(cleanPrompt, 2);
+          const items = skillRes?.data?.items || [];
+          if (items.length > 0) {
+            const lines = items.map((item) => {
+              const snippet = (item.snippet || "").replace(/<[^>]+>/g, "").trim();
+              return `- **${item.name}**: ${item.description || ""} (${snippet.slice(0, 200)})`;
+            });
+            recalledSections.push(`### Hinterlegte Skills & Dokumente (TencentDB):\n${lines.join("\n")}`);
+          }
+        } catch (err: any) {
+          api.logger.warn(`[openclaw-memory-tencentdb] Skill search failed: ${err.message || String(err)}`);
+        }
+
+        if (recalledSections.length === 0) {
           return;
         }
 
+        const contextBlock = `<tencentdb-memory>\n${recalledSections.join("\n\n")}\n</tencentdb-memory>`;
+
+        api.logger.info(
+          `[openclaw-memory-tencentdb] Prefetched ${recalledSections.length} memory sections into context`,
+        );
+
+        return {
+          prependContext: contextBlock,
+        };
+      } catch (err: any) {
+        api.logger.warn(`[openclaw-memory-tencentdb] Recall error: ${err.message || String(err)}`);
+      }
+    };
+
+    api.on("before_agent_start", handleRecall);
+    api.on("before_turn", handleRecall);
+    api.on("before_agent_run", handleRecall);
+    api.on("llm_input", (event: any) => {
+      const p = extractText(event?.prompt || event?.input || event?.messages);
+      if (p) {
+        activePrompt = p.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
+      }
+    });
+
+    // ── 2. Turn Sync Hooks (llm_output, before_agent_finalize, agent_end) ──
+    if (autoCapture) {
+      const handleTurnSync = async (event: any, ctx: any, hookName: string) => {
+        const sKey = event?.sessionKey || event?.sessionId || ctx?.sessionKey || "main";
+        const prompt = sessionPrompts.get(sKey) || activePrompt;
+        const answer = extractText(
+          event?.finalAnswer ||
+            event?.response ||
+            event?.output ||
+            event?.assistantTexts ||
+            event?.text ||
+            event?.content ||
+            event?.message,
+        );
+
+        if (!prompt || !answer) return;
+
+        api.logger.info(
+          `[openclaw-memory-tencentdb] [Hook: ${hookName}] Syncing turn to TencentDB (user: "${prompt.slice(0, 35)}...")`,
+        );
+
         try {
-          const recalledSections: string[] = [];
-
-          // 1. Search conversation history (L0/L1)
-          try {
-            const convRes = await client.searchConversation(cleanPrompt, maxRecallResults);
-            const messages = convRes?.data?.messages || [];
-            const validMessages = messages.filter((m) => (m.score ?? 1) >= scoreThreshold && m.content);
-
-            if (validMessages.length > 0) {
-              const lines = validMessages.map((m) => {
-                const clean = m.content.trim();
-                const snippet = clean.length > 300 ? `${clean.slice(0, 297)}...` : clean;
-                return `- ${snippet}`;
-              });
-              recalledSections.push(`### Relevante Gesprächserinnerungen (TencentDB):\n${lines.join("\n")}`);
-            }
-          } catch (err: any) {
-            api.logger.warn(`[openclaw-memory-tencentdb] Conversation search failed: ${err.message || String(err)}`);
-          }
-
-          // 2. Search skills / distilled knowledge
-          try {
-            const skillRes = await client.searchSkills(cleanPrompt, 2);
-            const items = skillRes?.data?.items || [];
-            if (items.length > 0) {
-              const lines = items.map((item) => {
-                const snippet = (item.snippet || "").replace(/<[^>]+>/g, "").trim();
-                return `- **${item.name}**: ${item.description || ""} (${snippet.slice(0, 200)})`;
-              });
-              recalledSections.push(`### Hinterlegte Skills & Dokumente (TencentDB):\n${lines.join("\n")}`);
-            }
-          } catch (err: any) {
-            api.logger.warn(`[openclaw-memory-tencentdb] Skill search failed: ${err.message || String(err)}`);
-          }
-
-          if (recalledSections.length === 0) {
-            return;
-          }
-
-          const contextBlock = `<tencentdb-memory>\n${recalledSections.join("\n\n")}\n</tencentdb-memory>`;
-
+          await client.importTurn(`openclaw-${sKey}`, [
+            { role: "user", content: prompt },
+            { role: "assistant", content: answer },
+          ]);
           api.logger.info(
-            `[openclaw-memory-tencentdb] Prefetched ${recalledSections.length} memory sections into context`,
+            `[openclaw-memory-tencentdb] [Hook: ${hookName}] Successfully synced turn to TencentDB L0!`,
           );
-
-          return {
-            prependContext: contextBlock,
-          };
+          sessionPrompts.delete(sKey);
         } catch (err: any) {
-          api.logger.warn(`[openclaw-memory-tencentdb] Recall error: ${err.message || String(err)}`);
+          api.logger.warn(
+            `[openclaw-memory-tencentdb] [Hook: ${hookName}] Sync failed: ${err.message || String(err)}`,
+          );
         }
       };
 
-      api.on("before_agent_start", handleRecall);
-      api.on("before_turn", handleRecall);
-      api.on("before_agent_run", handleRecall);
+      api.on("llm_output", (event: any, ctx: any) => handleTurnSync(event, ctx, "llm_output"));
+      api.on("before_agent_finalize", (event: any, ctx: any) => handleTurnSync(event, ctx, "before_agent_finalize"));
+      api.on("agent_end", (event: any, ctx: any) => handleTurnSync(event, ctx, "agent_end"));
+      api.on("message_sent", (event: any, ctx: any) => handleTurnSync(event, ctx, "message_sent"));
+
+      if (typeof api.registerHook === "function") {
+        try {
+          api.registerHook("message:sent", (ctx: any) => handleTurnSync(ctx, ctx, "message:sent"));
+        } catch {}
+      }
     }
 
-    // ── 2. Tools ────────────────────────────────────────────────────────
+    // ── 3. Tools ────────────────────────────────────────────────────────
 
     // Tool 1: Conversation Search
     api.registerTool({
@@ -268,7 +328,7 @@ const memoryPlugin = {
       },
     });
 
-    // ── 3. Register Long-Running Service ────────────────────────────────
+    // ── 4. Register Long-Running Service ────────────────────────────────
     api.registerService({
       id: "openclaw-memory-tencentdb",
       start: () => {

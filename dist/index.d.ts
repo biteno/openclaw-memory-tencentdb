@@ -1,8 +1,10 @@
 /**
  * OpenClaw Remote TencentDB Agent Memory Plugin
  *
- * Combines prefetch recall before agent turns with an autonomous
- * session file watcher that syncs all conversation files to TencentDB.
+ * Full multi-channel memory integration:
+ * - Pre-turn semantic recall (before_agent_start)
+ * - Real-time turn capture (llm_output, before_agent_finalize, message_sent)
+ * - Background session watcher
  */
 interface OpenClawPluginApi {
     config?: Record<string, any>;
@@ -25,11 +27,7 @@ interface OpenClawPluginApi {
         start: () => void | Promise<void>;
         stop?: () => void | Promise<void>;
     }): void;
-    registerCli?(cli: {
-        command: string;
-        description: string;
-        action: (args: any) => Promise<void>;
-    }): void;
+    registerHook?(name: string, handler: (ctx: any) => Promise<void> | void): void;
 }
 declare const memoryPlugin: {
     id: string;
