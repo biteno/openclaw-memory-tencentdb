@@ -1,8 +1,8 @@
 /**
  * OpenClaw Remote TencentDB Agent Memory Plugin
  *
- * Provides bidirectional recall prefetching and turn synchronization
- * against a central TencentDB Agent Memory cluster (e.g. tencentdb.itsc.local).
+ * Combines prefetch recall before agent turns with an autonomous
+ * session file watcher that syncs all conversation files to TencentDB.
  */
 interface OpenClawPluginApi {
     config?: Record<string, any>;

@@ -1,12 +1,13 @@
 /**
  * OpenClaw Remote TencentDB Agent Memory Plugin
  *
- * Provides bidirectional recall prefetching and turn synchronization
- * against a central TencentDB Agent Memory cluster (e.g. tencentdb.itsc.local).
+ * Combines prefetch recall before agent turns with an autonomous
+ * session file watcher that syncs all conversation files to TencentDB.
  */
 
 import { Type } from "@sinclair/typebox";
 import { TencentDBClient } from "./client.js";
+import { OpenClawSessionWatcher } from "./watcher.js";
 import type { TencentDBConfig } from "./types.js";
 
 // Type definition for OpenClaw Plugin API
@@ -107,30 +108,17 @@ const memoryPlugin = {
       `[openclaw-memory-tencentdb] Plugin registered (core: ${pluginConfig.coreUrl || "default"}, import: ${pluginConfig.importUrl || "default"}, team: ${client.getTeamId()}, agent: ${client.getAgentId()}, userKey configured: ${Boolean(pluginConfig.userKey)})`,
     );
 
-    // Track active user prompts per session so turn sync always has the user question
-    const sessionPrompts = new Map<string, string>();
-    let fallbackLastPrompt = "";
-    let lastSyncedSignature = "";
+    // Start background session file watcher immediately
+    const watcher = new OpenClawSessionWatcher(client, api.logger);
+    watcher.start(3000);
 
     // ── 1. Auto-Recall Hook ────────────────────────────────────────────
     if (autoRecall) {
       const handleRecall = async (event: any, ctx: any) => {
-        let prompt = extractText(event?.prompt || event?.content || event?.message || event?.text);
+        const prompt = extractText(event?.prompt || event?.content || event?.message || event?.text);
         if (!prompt) return;
 
-        const sessionId =
-          (ctx as any)?.sessionKey ||
-          (ctx as any)?.sessionId ||
-          event?.sessionId ||
-          "openclaw-default";
-
-        // Clean prompt for memory capture reference
         const cleanPrompt = prompt.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
-        if (cleanPrompt) {
-          sessionPrompts.set(sessionId, cleanPrompt);
-          fallbackLastPrompt = cleanPrompt;
-        }
-
         if (cleanPrompt.length < 4) return;
 
         // Skip trivial messages
@@ -195,125 +183,9 @@ const memoryPlugin = {
       api.on("before_agent_start", handleRecall);
       api.on("before_turn", handleRecall);
       api.on("before_agent_run", handleRecall);
-      api.on("message_received", (event: any, ctx: any) => {
-        const text = extractText(event);
-        const sessionId = (ctx as any)?.sessionKey || (ctx as any)?.sessionId || event?.sessionId || "openclaw-default";
-        if (text) {
-          const clean = text.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
-          if (clean) {
-            sessionPrompts.set(sessionId, clean);
-            fallbackLastPrompt = clean;
-          }
-        }
-      });
     }
 
-    // ── 2. Auto-Capture Hook ────────────────────────────────────────────
-    if (autoCapture) {
-      const syncTurnToTencentDB = async (
-        sessionId: string,
-        userContent: string,
-        assistantContent: string,
-        triggerEvent: string,
-      ) => {
-        const cleanUser = userContent.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
-        const cleanAssistant = assistantContent.trim();
-
-        if (!cleanUser || !cleanAssistant) {
-          return;
-        }
-
-        const signature = `${sessionId}:::${cleanUser}:::${cleanAssistant}`;
-        if (signature === lastSyncedSignature) {
-          return; // Deduplicate
-        }
-        lastSyncedSignature = signature;
-
-        api.logger.info(
-          `[openclaw-memory-tencentdb] Syncing turn via [${triggerEvent}] to TencentDB for session: ${sessionId} (user: ${cleanUser.slice(0, 30)}...)`,
-        );
-
-        try {
-          await client.importTurn(sessionId, [
-            { role: "user", content: cleanUser },
-            { role: "assistant", content: cleanAssistant },
-          ]);
-          api.logger.info(
-            `[openclaw-memory-tencentdb] Successfully synced turn to TencentDB (session: ${sessionId})`,
-          );
-        } catch (err: any) {
-          api.logger.warn(
-            `[openclaw-memory-tencentdb] Turn sync failed: ${err.message || String(err)}`,
-          );
-        }
-      };
-
-      // Handler for agent completion events
-      const handleAgentCompletion = async (eventName: string, event: any, ctx: any) => {
-        const sessionId =
-          (ctx as any)?.sessionKey ||
-          (ctx as any)?.sessionId ||
-          event?.sessionId ||
-          "openclaw-default";
-
-        let userText = "";
-        let assistantText = "";
-
-        // Direct fields
-        assistantText = extractText(
-          event?.finalAnswer ||
-            event?.response ||
-            event?.output ||
-            event?.text ||
-            event?.content ||
-            event?.message ||
-            event?.payload,
-        );
-
-        // Messages array
-        const rawMessages = event?.messages || event?.history || event?.conversation;
-        if (Array.isArray(rawMessages) && rawMessages.length > 0) {
-          for (let i = rawMessages.length - 1; i >= 0; i--) {
-            const msg = rawMessages[i];
-            if (!msg || typeof msg !== "object") continue;
-
-            const role = String(msg.role || msg.sender || msg.type || "").toLowerCase();
-            const text = extractText(msg);
-            if (!text) continue;
-
-            if ((role === "assistant" || role === "model" || role === "bot") && !assistantText) {
-              assistantText = text;
-            } else if ((role === "user" || role === "human") && !userText) {
-              userText = text;
-            }
-
-            if (userText && assistantText) break;
-          }
-        }
-
-        // Fallback user text
-        if (!userText) {
-          userText =
-            extractText(event?.prompt) ||
-            sessionPrompts.get(sessionId) ||
-            fallbackLastPrompt ||
-            "";
-        }
-
-        if (userText && assistantText) {
-          await syncTurnToTencentDB(sessionId, userText, assistantText, eventName);
-        }
-      };
-
-      api.on("before_agent_finalize", (e: any, ctx: any) => handleAgentCompletion("before_agent_finalize", e, ctx));
-      api.on("agent_end", (e: any, ctx: any) => handleAgentCompletion("agent_end", e, ctx));
-      api.on("after_turn", (e: any, ctx: any) => handleAgentCompletion("after_turn", e, ctx));
-      api.on("turn_end", (e: any, ctx: any) => handleAgentCompletion("turn_end", e, ctx));
-      api.on("message_sent", (e: any, ctx: any) => handleAgentCompletion("message_sent", e, ctx));
-      api.on("message_sending", (e: any, ctx: any) => handleAgentCompletion("message_sending", e, ctx));
-    }
-
-    // ── 3. Register Explicit Tools ──────────────────────────────────────
+    // ── 2. Tools ────────────────────────────────────────────────────────
 
     // Tool 1: Conversation Search
     api.registerTool({
@@ -396,15 +268,17 @@ const memoryPlugin = {
       },
     });
 
-    // ── 4. Register Long-Running Service ────────────────────────────────
+    // ── 3. Register Long-Running Service ────────────────────────────────
     api.registerService({
       id: "openclaw-memory-tencentdb",
       start: () => {
+        watcher.start(3000);
         api.logger.info(
           `[openclaw-memory-tencentdb] Service active (team: ${client.getTeamId()}, agent: ${client.getAgentId()})`,
         );
       },
       stop: () => {
+        watcher.stop();
         api.logger.info("[openclaw-memory-tencentdb] Service stopped");
       },
     });
