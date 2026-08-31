@@ -1,8 +1,8 @@
 /**
- * File Watcher for OpenClaw Sessions & Transcripts
+ * Comprehensive Session Watcher for OpenClaw
  *
- * Continuously monitors OpenClaw workspace memory & session directories,
- * parses completed dialogue turns, and pushes them directly to TencentDB.
+ * Monitors OpenClaw's per-agent SQLite databases (~/.openclaw/agents/ * /agent/openclaw-agent.sqlite)
+ * and workspace memory files, extracting active dialogue turns and syncing them to TencentDB L0.
  */
 import type { TencentDBClient } from "./client.js";
 interface Logger {
@@ -14,18 +14,27 @@ interface Logger {
 export declare class OpenClawSessionWatcher {
     private client;
     private logger;
-    private watchDirs;
     private intervalTimer;
-    private processedSignatures;
-    private fileOffsets;
     private isRunning;
-    constructor(client: TencentDBClient, logger: Logger, customWatchDirs?: string[]);
+    private sqliteWatermarks;
+    private fileOffsets;
+    private processedSignatures;
+    private sessionPendingUser;
+    constructor(client: TencentDBClient, logger: Logger);
     start(pollIntervalMs?: number): void;
     stop(): void;
-    private scanDirs;
-    private processFile;
-    private parseAndSyncMarkdown;
-    private parseAndSyncJsonl;
+    private scanAll;
+    private scanSqliteDatabases;
+    private findSqlitePaths;
+    private inspectAndSyncSqlite;
+    private readSqliteWithNode;
+    private readSqliteWithCli;
+    private processSqliteRow;
+    private extractRoleAndContent;
+    private scanTextFiles;
+    private processTextFile;
+    private parseMarkdown;
+    private parseJsonl;
     private syncTurn;
 }
 export {};
