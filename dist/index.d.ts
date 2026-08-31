@@ -1,10 +1,10 @@
 /**
  * OpenClaw Remote TencentDB Agent Memory Plugin
  *
- * Full multi-channel memory integration:
+ * Fast, non-blocking native memory integration:
  * - Pre-turn semantic recall (before_agent_start)
- * - Real-time turn capture (agent_end, llm_output, before_agent_finalize, message_sent)
- * - Multi-agent support & direct L0 turn sync
+ * - Real-time turn capture (agent_end, before_agent_finalize, message_sent)
+ * - Zero event-loop blocking during gateway startup
  */
 interface OpenClawPluginApi {
     config?: Record<string, any>;

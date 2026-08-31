@@ -1,15 +1,14 @@
 /**
  * OpenClaw Remote TencentDB Agent Memory Plugin
  *
- * Full multi-channel memory integration:
+ * Fast, non-blocking native memory integration:
  * - Pre-turn semantic recall (before_agent_start)
- * - Real-time turn capture (agent_end, llm_output, before_agent_finalize, message_sent)
- * - Multi-agent support & direct L0 turn sync
+ * - Real-time turn capture (agent_end, before_agent_finalize, message_sent)
+ * - Zero event-loop blocking during gateway startup
  */
 
 import { Type } from "@sinclair/typebox";
 import { TencentDBClient } from "./client.js";
-import { OpenClawSessionWatcher } from "./watcher.js";
 import type { TencentDBConfig } from "./types.js";
 
 // Type definition for OpenClaw Plugin API
@@ -110,10 +109,6 @@ const memoryPlugin = {
     let activePrompt = "";
     const sessionPrompts = new Map<string, string>();
     const syncedTurnSignatures = new Set<string>();
-
-    // Start background session file & SQLite watcher
-    const watcher = new OpenClawSessionWatcher(client, api.logger);
-    watcher.start(3000);
 
     // ── 1. Auto-Recall & Prompt Capture Hook ───────────────────────────
     const handleRecall = async (event: any, ctx: any) => {
@@ -289,17 +284,7 @@ const memoryPlugin = {
         }
       });
 
-      // Hook 3: llm_output (Low-level LLM completion event)
-      api.on("llm_output", async (event: any, ctx: any) => {
-        const sKey = (ctx as any)?.sessionKey || event?.sessionKey || "main";
-        const prompt = extractText(event?.prompt || event?.input) || sessionPrompts.get(sKey) || activePrompt;
-        const answer = extractText(event?.response || event?.output || event?.assistantTexts || event?.text);
-        if (prompt && answer) {
-          await dispatchTurn(prompt, answer, "llm_output", sKey);
-        }
-      });
-
-      // Hook 4: message_sent
+      // Hook 3: message_sent
       api.on("message_sent", async (event: any, ctx: any) => {
         const sKey = (ctx as any)?.sessionKey || event?.sessionKey || "main";
         const prompt = sessionPrompts.get(sKey) || activePrompt;
@@ -397,13 +382,11 @@ const memoryPlugin = {
     api.registerService({
       id: "openclaw-memory-tencentdb",
       start: () => {
-        watcher.start(3000);
         api.logger.info(
           `[openclaw-memory-tencentdb] Service active (team: ${client.getTeamId()}, agent: ${client.getAgentId()})`,
         );
       },
       stop: () => {
-        watcher.stop();
         api.logger.info("[openclaw-memory-tencentdb] Service stopped");
       },
     });
