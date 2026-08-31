@@ -31,6 +31,26 @@ function resolvePluginConfig(api) {
     }
     return api.pluginConfig || api.config || {};
 }
+function extractText(val) {
+    if (!val)
+        return "";
+    if (typeof val === "string")
+        return val.trim();
+    if (typeof val.text === "string")
+        return val.text.trim();
+    if (typeof val.content === "string")
+        return val.content.trim();
+    if (typeof val.message === "string")
+        return val.message.trim();
+    if (Array.isArray(val)) {
+        return val
+            .map((item) => extractText(item))
+            .filter(Boolean)
+            .join("\n")
+            .trim();
+    }
+    return "";
+}
 const memoryPlugin = {
     id: "openclaw-memory-tencentdb",
     name: "TencentDB Agent Memory (Remote)",
@@ -51,19 +71,13 @@ const memoryPlugin = {
         // ── 1. Auto-Recall Hook (before_agent_start / before_turn) ──────────
         if (autoRecall) {
             const handleRecall = async (event, ctx) => {
-                let prompt = "";
-                if (typeof event?.prompt === "string") {
-                    prompt = event.prompt.trim();
-                }
-                else if (typeof event?.content === "string") {
-                    prompt = event.content.trim();
-                }
-                else if (typeof event?.message === "string") {
-                    prompt = event.message.trim();
-                }
+                let prompt = extractText(event?.prompt || event?.content || event?.message || event?.text);
                 if (!prompt)
                     return;
-                const sessionId = ctx?.sessionKey || ctx?.sessionId || event?.sessionId || "openclaw-default";
+                const sessionId = ctx?.sessionKey ||
+                    ctx?.sessionId ||
+                    event?.sessionId ||
+                    "openclaw-default";
                 // Clean prompt for memory capture reference
                 const cleanPrompt = prompt.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
                 if (cleanPrompt) {
@@ -126,8 +140,19 @@ const memoryPlugin = {
             api.on("before_agent_start", handleRecall);
             api.on("before_turn", handleRecall);
             api.on("before_agent_run", handleRecall);
+            api.on("message_received", (event, ctx) => {
+                const text = extractText(event);
+                const sessionId = ctx?.sessionKey || ctx?.sessionId || event?.sessionId || "openclaw-default";
+                if (text) {
+                    const clean = text.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
+                    if (clean) {
+                        sessionPrompts.set(sessionId, clean);
+                        fallbackLastPrompt = clean;
+                    }
+                }
+            });
         }
-        // ── 2. Auto-Capture Hook (agent_end / after_turn / turn_end) ────────
+        // ── 2. Auto-Capture Hook (message_sent / agent_end / after_turn) ─────
         if (autoCapture) {
             const handleCapture = async (event, ctx) => {
                 const sessionId = ctx?.sessionKey ||
@@ -136,7 +161,14 @@ const memoryPlugin = {
                     "openclaw-default";
                 let userText = "";
                 let assistantText = "";
-                // 1. Check message list in event
+                // 1. Extract assistant text from event
+                assistantText = extractText(event?.response ||
+                    event?.output ||
+                    event?.text ||
+                    event?.content ||
+                    event?.message ||
+                    event?.payload);
+                // 2. Extract messages from array if present
                 const rawMessages = event?.messages || event?.history || event?.conversation;
                 if (Array.isArray(rawMessages) && rawMessages.length > 0) {
                     for (let i = rawMessages.length - 1; i >= 0; i--) {
@@ -144,26 +176,11 @@ const memoryPlugin = {
                         if (!msg || typeof msg !== "object")
                             continue;
                         const role = String(msg.role || msg.sender || msg.type || "").toLowerCase();
-                        let text = "";
-                        if (typeof msg.content === "string") {
-                            text = msg.content;
-                        }
-                        else if (typeof msg.text === "string") {
-                            text = msg.text;
-                        }
-                        else if (typeof msg.message === "string") {
-                            text = msg.message;
-                        }
-                        else if (Array.isArray(msg.content)) {
-                            text = msg.content
-                                .filter((c) => c && typeof c === "object" && typeof c.text === "string")
-                                .map((c) => c.text)
-                                .join("\n");
-                        }
+                        const text = extractText(msg);
                         if (!text)
                             continue;
                         if ((role === "assistant" || role === "model" || role === "bot") && !assistantText) {
-                            assistantText = text.trim();
+                            assistantText = text;
                         }
                         else if ((role === "user" || role === "human") && !userText) {
                             userText = text.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
@@ -172,7 +189,7 @@ const memoryPlugin = {
                             break;
                     }
                 }
-                // 2. If user text is still empty, get from prompt or stored sessionPrompts
+                // 3. Fallback user prompt from stored sessionPrompts
                 if (!userText) {
                     if (typeof event?.prompt === "string" && event.prompt.trim()) {
                         userText = event.prompt.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
@@ -184,23 +201,10 @@ const memoryPlugin = {
                         userText = fallbackLastPrompt;
                     }
                 }
-                // 3. If assistant text is still empty, get from direct response/output fields
-                if (!assistantText) {
-                    if (typeof event?.response === "string" && event.response.trim()) {
-                        assistantText = event.response.trim();
-                    }
-                    else if (typeof event?.output === "string" && event.output.trim()) {
-                        assistantText = event.output.trim();
-                    }
-                    else if (typeof event?.text === "string" && event.text.trim()) {
-                        assistantText = event.text.trim();
-                    }
-                    else if (typeof event?.content === "string" && event.content.trim()) {
-                        assistantText = event.content.trim();
-                    }
-                }
+                // Clean user text
+                userText = userText.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
+                assistantText = assistantText.trim();
                 if (!userText || !assistantText) {
-                    api.logger.debug?.(`[openclaw-memory-tencentdb] Capture skipped: incomplete turn (user: ${Boolean(userText)}, assistant: ${Boolean(assistantText)})`);
                     return;
                 }
                 const signature = `${sessionId}:::${userText}:::${assistantText}`;
@@ -208,7 +212,7 @@ const memoryPlugin = {
                     return; // Deduplicate
                 }
                 lastSyncedSignature = signature;
-                api.logger.info(`[openclaw-memory-tencentdb] Syncing turn to TencentDB Panel for session: ${sessionId} (user: ${userText.slice(0, 40)}...)`);
+                api.logger.info(`[openclaw-memory-tencentdb] Syncing dialogue turn to TencentDB Panel for session: ${sessionId} (user: ${userText.slice(0, 30)}...)`);
                 client
                     .importTurn(sessionId, [
                     { role: "user", content: userText },
@@ -221,10 +225,11 @@ const memoryPlugin = {
                     api.logger.warn(`[openclaw-memory-tencentdb] Background turn sync failed: ${err.message || String(err)}`);
                 });
             };
+            api.on("message_sent", handleCapture);
+            api.on("message_sending", handleCapture);
             api.on("agent_end", handleCapture);
             api.on("after_turn", handleCapture);
             api.on("turn_end", handleCapture);
-            api.on("message_sending", handleCapture);
         }
         // ── 3. Register Explicit Tools ──────────────────────────────────────
         // Tool 1: Conversation Search
