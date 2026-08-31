@@ -53,35 +53,36 @@ Im Gegensatz zum offiziellen lokalen NPM-Paket (das eine isolierte SQLite-Datenb
 
 ## 📦 1. Installation
 
-### Option A: Über Git in das OpenClaw Extensions-Verzeichnis klonen (Empfohlen)
-
 ```bash
 # In das OpenClaw Extensions-Verzeichnis wechseln
 cd ~/.openclaw/extensions/
 git clone https://github.com/biteno/openclaw-memory-tencentdb.git
 
-# Abhängigkeiten installieren & bauen
+# Abhängigkeiten installieren
 cd openclaw-memory-tencentdb
 npm install
-npm run build
-```
-
-### Option B: Über den OpenClaw Plugin Manager
-
-```bash
-openclaw plugins install biteno/openclaw-memory-tencentdb
 ```
 
 ---
 
 ## ⚙️ 2. Konfiguration (`~/.openclaw/openclaw.json`)
 
-Füge den Plugin-Eintrag unter `plugins.entries` in deine `~/.openclaw/openclaw.json` ein:
+Füge den Plugin-Eintrag in deine `~/.openclaw/openclaw.json` ein. 
+
+> 💡 **Wichtig:** OpenClaw verwendet ein **Slot-System**. Setze `"slots": { "memory": "openclaw-memory-tencentdb" }`, damit OpenClaw das Plugin als primären Speicheranbieter aktiviert:
 
 ```jsonc
 {
   "plugins": {
     "enabled": true,
+    "load": {
+      "paths": [
+        "~/.openclaw/extensions/openclaw-memory-tencentdb"
+      ]
+    },
+    "slots": {
+      "memory": "openclaw-memory-tencentdb"
+    },
     "entries": {
       "openclaw-memory-tencentdb": {
         "enabled": true,
@@ -102,8 +103,6 @@ Füge den Plugin-Eintrag unter `plugins.entries` in deine `~/.openclaw/openclaw.
   }
 }
 ```
-
-> ⚠️ **OpenClaw Config Syntax:** In OpenClaw müssen die Plugin-Parameter zwingend im Unterobjekt `"config": { ... }` innerhalb von `plugins.entries.<plugin-name>` definiert werden.
 
 ### Parameter-Referenz:
 
@@ -141,7 +140,7 @@ Dem Agenten stehen automatisch folgende Werkzeuge für gezielte Abfragen zur Ver
 
 ---
 
-## 🔄 4. Validierung, Neustart & Verifikation
+## 🔄 4. Validierung & Neustart
 
 ```bash
 # 1. Konfiguration prüfen
