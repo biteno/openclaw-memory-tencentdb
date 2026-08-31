@@ -1,10 +1,10 @@
 /**
  * OpenClaw Remote TencentDB Agent Memory Plugin
  *
- * Fast, non-blocking native memory integration:
+ * Clean, non-blocking native memory integration:
  * - Pre-turn semantic recall (before_agent_start)
- * - Real-time turn capture (agent_end, before_agent_finalize, message_sent)
- * - Zero event-loop blocking during gateway startup
+ * - Real-time turn capture (agent_end)
+ * - Safe context injection without blocking agent runs
  */
 interface OpenClawPluginApi {
     config?: Record<string, any>;
@@ -27,7 +27,6 @@ interface OpenClawPluginApi {
         start: () => void | Promise<void>;
         stop?: () => void | Promise<void>;
     }): void;
-    registerHook?(name: string, handler: (ctx: any) => Promise<void> | void): void;
 }
 declare const memoryPlugin: {
     id: string;
