@@ -1,0 +1,41 @@
+{
+  "name": "@biteno/openclaw-memory-tencentdb",
+  "version": "1.0.0",
+  "description": "Remote TencentDB Agent Memory Plugin for OpenClaw — bidirectional recall prefetching, turn synchronization, and team memory tools for central TencentDB clusters.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "agent-memory",
+    "tencentdb",
+    "ai-memory",
+    "long-term-memory",
+    "biteno"
+  ],
+  "author": "Biteno GmbH <support@biteno.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/biteno/openclaw-memory-tencentdb.git"
+  },
+  "bugs": {
+    "url": "https://github.com/biteno/openclaw-memory-tencentdb/issues"
+  },
+  "homepage": "https://github.com/biteno/openclaw-memory-tencentdb#readme",
+  "dependencies": {
+    "@sinclair/typebox": "^0.32.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.3"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.1.0"
+  }
+}

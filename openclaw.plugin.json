@@ -1,0 +1,103 @@
+{
+  "id": "openclaw-memory-tencentdb",
+  "name": "TencentDB Agent Memory (Remote)",
+  "kind": "memory",
+  "version": "1.0.0",
+  "description": "Remote TencentDB Agent Memory plugin for OpenClaw — connects directly to a central TencentDB MemoryCore & Panel cluster for multi-agent fleet memory, bidirectional turn sync, and prefetch recall.",
+  "uiHints": {
+    "coreUrl": {
+      "label": "TencentDB Core URL",
+      "placeholder": "http://tencentdb.itsc.local:8420",
+      "help": "Base URL of TencentDB MemoryCore (:8420) for L0-L3 semantic search and skill recall."
+    },
+    "importUrl": {
+      "label": "TencentDB Import URL",
+      "placeholder": "http://tencentdb.itsc.local:8125",
+      "help": "Base URL of TencentDB MemoryPanel (:8125) for turn synchronization (/api/v1/chat-memory/import)."
+    },
+    "knowledgeUrl": {
+      "label": "TencentDB Knowledge URL",
+      "placeholder": "http://tencentdb.itsc.local:8424",
+      "help": "Base URL of TencentDB MemoryKnowledge (:8424) for Team-Wiki and Code-Graph search."
+    },
+    "userKey": {
+      "label": "User API Key",
+      "sensitive": true,
+      "placeholder": "sk-mem-...",
+      "help": "TencentDB Access Key from .admin-key or personal user account."
+    },
+    "teamId": {
+      "label": "Team ID",
+      "placeholder": "team-thpa5ncu0p",
+      "help": "Team identifier / tenant namespace in TencentDB."
+    },
+    "agentId": {
+      "label": "Agent ID",
+      "placeholder": "agt-th8bvq00pv",
+      "help": "Unique Agent ID container assigned to this OpenClaw instance."
+    },
+    "autoRecall": {
+      "label": "Auto-Recall",
+      "help": "Automatically prefetch relevant conversations and skills before each agent turn."
+    },
+    "autoCapture": {
+      "label": "Auto-Capture",
+      "help": "Automatically stream completed turns to the central TencentDB cluster after each agent turn."
+    },
+    "scoreThreshold": {
+      "label": "Recall Score Threshold",
+      "placeholder": "0.5",
+      "help": "Minimum similarity score (0.0 - 1.0) for memories to be injected into context."
+    },
+    "maxRecallResults": {
+      "label": "Max Recall Results",
+      "placeholder": "3",
+      "help": "Maximum number of conversation memories to inject into prompt context."
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "coreUrl": {
+        "type": "string",
+        "default": "http://tencentdb.itsc.local:8420"
+      },
+      "importUrl": {
+        "type": "string",
+        "default": "http://tencentdb.itsc.local:8125"
+      },
+      "knowledgeUrl": {
+        "type": "string",
+        "default": "http://tencentdb.itsc.local:8424"
+      },
+      "userKey": {
+        "type": "string"
+      },
+      "teamId": {
+        "type": "string",
+        "default": "team-thpa5ncu0p"
+      },
+      "agentId": {
+        "type": "string"
+      },
+      "autoRecall": {
+        "type": "boolean",
+        "default": true
+      },
+      "autoCapture": {
+        "type": "boolean",
+        "default": true
+      },
+      "scoreThreshold": {
+        "type": "number",
+        "default": 0.5
+      },
+      "maxRecallResults": {
+        "type": "number",
+        "default": 3
+      }
+    },
+    "required": []
+  }
+}
