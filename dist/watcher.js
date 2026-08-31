@@ -2,7 +2,7 @@
  * Comprehensive Session Watcher for OpenClaw
  *
  * Monitors OpenClaw's per-agent SQLite databases (~/.openclaw/agents/ * /agent/openclaw-agent.sqlite)
- * and workspace memory files, extracting active dialogue turns and syncing them to TencentDB L0.
+ * using Python3 / native SQLite, extracting active dialogue turns and syncing them to TencentDB L0.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -53,11 +53,11 @@ export class OpenClawSessionWatcher {
             this.scanTextFiles(isBaseline);
         }
         catch (err) {
-            this.logger.debug?.(`[openclaw-memory-tencentdb] Scan error: ${err.message}`);
+            this.logger.warn(`[openclaw-memory-tencentdb] Scan error: ${err.message || String(err)}`);
         }
     }
     // ──────────────────────────────────────────────────────────────────────────
-    // 1. SQLite Scanner (OpenClaw 2026+ active state plane)
+    // 1. SQLite Scanner (Python3 + Native DB)
     // ──────────────────────────────────────────────────────────────────────────
     scanSqliteDatabases(isBaseline) {
         const candidatePaths = this.findSqlitePaths();
@@ -74,10 +74,7 @@ export class OpenClawSessionWatcher {
     }
     findSqlitePaths() {
         const home = os.homedir();
-        const roots = [
-            path.join(home, ".openclaw"),
-            "/root/.openclaw",
-        ];
+        const roots = [path.join(home, ".openclaw"), "/root/.openclaw"];
         const results = new Set();
         for (const root of roots) {
             if (!fs.existsSync(root))
@@ -110,7 +107,7 @@ export class OpenClawSessionWatcher {
                 try {
                     const files = fs.readdirSync(memDir, { withFileTypes: true });
                     for (const f of files) {
-                        if (f.isFile() && f.name.endsWith(".sqlite")) {
+                        if (f.isFile() && f.name.endsWith(".sqlite") && !f.name.includes("-wal") && !f.name.includes("-shm")) {
                             results.add(path.join(memDir, f.name));
                         }
                     }
@@ -120,102 +117,59 @@ export class OpenClawSessionWatcher {
         }
         return Array.from(results);
     }
+    querySqlitePython(dbPath, sql, params = []) {
+        const pyCode = `
+import sqlite3, json, sys
+try:
+    conn = sqlite3.connect(f'file:{sys.argv[1]}?mode=ro', uri=True)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    params = json.loads(sys.argv[3]) if len(sys.argv) > 3 else []
+    rows = [dict(r) for r in c.execute(sys.argv[2], params).fetchall()]
+    print(json.dumps(rows))
+except Exception as e:
+    print(json.dumps([]))
+`;
+        try {
+            const res = childProcess.execFileSync("python3", ["-c", pyCode, dbPath, sql, JSON.stringify(params)], {
+                encoding: "utf-8",
+                timeout: 3000,
+            });
+            const parsed = JSON.parse(res.trim());
+            return Array.isArray(parsed) ? parsed : [];
+        }
+        catch {
+            return [];
+        }
+    }
     inspectAndSyncSqlite(dbPath, isBaseline) {
-        let DatabaseSyncClass = null;
-        try {
-            // Try native Node.js 22+ SQLite
-            const sqliteModule = require("node:sqlite");
-            DatabaseSyncClass = sqliteModule.DatabaseSync;
-        }
-        catch { }
-        if (DatabaseSyncClass) {
-            this.readSqliteWithNode(DatabaseSyncClass, dbPath, isBaseline);
-        }
-        else {
-            this.readSqliteWithCli(dbPath, isBaseline);
-        }
-    }
-    readSqliteWithNode(DatabaseSyncClass, dbPath, isBaseline) {
-        let db = null;
-        try {
-            db = new DatabaseSyncClass(dbPath, { readOnly: true });
-            const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
-            for (const t of tables) {
-                const tableName = t.name;
-                if (tableName.startsWith("sqlite_") || tableName.startsWith("_"))
-                    continue;
-                const key = `${dbPath}::${tableName}`;
-                const lastWatermark = this.sqliteWatermarks.get(key) || 0;
-                // Inspect columns
-                const colInfo = db.prepare(`PRAGMA table_info("${tableName}")`).all();
-                const colNames = colInfo.map((c) => c.name.toLowerCase());
-                const hasRelevantCols = colNames.some((c) => ["content", "text", "message", "payload", "payload_json", "role", "sender", "session_key"].includes(c));
-                if (!hasRelevantCols)
-                    continue;
-                if (isBaseline) {
-                    try {
-                        const maxRow = db.prepare(`SELECT MAX(rowid) as maxid FROM "${tableName}"`).get();
-                        const maxId = Number(maxRow?.maxid || 0);
-                        this.sqliteWatermarks.set(key, maxId);
-                    }
-                    catch {
-                        this.sqliteWatermarks.set(key, 0);
-                    }
-                    continue;
-                }
-                // Query new rows
+        const tables = this.querySqlitePython(dbPath, "SELECT name FROM sqlite_master WHERE type='table'");
+        for (const t of tables) {
+            const tableName = t.name;
+            if (!tableName || tableName.startsWith("sqlite_") || tableName.startsWith("_"))
+                continue;
+            const key = `${dbPath}::${tableName}`;
+            const lastWatermark = this.sqliteWatermarks.get(key) || 0;
+            // Inspect columns
+            const cols = this.querySqlitePython(dbPath, `PRAGMA table_info("${tableName}")`);
+            const colNames = cols.map((c) => String(c.name || "").toLowerCase());
+            const hasRelevantCols = colNames.some((c) => ["content", "text", "message", "payload", "payload_json", "role", "sender", "session_key"].includes(c));
+            if (!hasRelevantCols)
+                continue;
+            if (isBaseline) {
                 try {
-                    const rows = db.prepare(`SELECT rowid as _rowid, * FROM "${tableName}" WHERE rowid > ? ORDER BY rowid ASC`).all(lastWatermark);
-                    let currentMax = lastWatermark;
-                    for (const row of rows) {
-                        const rowId = Number(row._rowid);
-                        if (rowId > currentMax)
-                            currentMax = rowId;
-                        this.processSqliteRow(row, dbPath, tableName);
-                    }
-                    this.sqliteWatermarks.set(key, currentMax);
+                    const maxRow = this.querySqlitePython(dbPath, `SELECT IFNULL(MAX(rowid), 0) as maxid FROM "${tableName}"`);
+                    const maxId = Number(maxRow[0]?.maxid || 0);
+                    this.sqliteWatermarks.set(key, maxId);
                 }
-                catch (queryErr) {
-                    // Table may not have rowid
+                catch {
+                    this.sqliteWatermarks.set(key, 0);
                 }
+                continue;
             }
-        }
-        catch (err) {
-            this.logger.debug?.(`[openclaw-memory-tencentdb] DatabaseSync error on ${dbPath}: ${err.message}`);
-        }
-        finally {
+            // Query new rows
             try {
-                db?.close();
-            }
-            catch { }
-        }
-    }
-    readSqliteWithCli(dbPath, isBaseline) {
-        try {
-            const getTablesCmd = `sqlite3 "${dbPath}" "SELECT name FROM sqlite_master WHERE type='table';"`;
-            const tableOutput = childProcess.execSync(getTablesCmd, { encoding: "utf-8", timeout: 2000 });
-            const tableNames = tableOutput.split("\n").map((s) => s.trim()).filter(Boolean);
-            for (const tableName of tableNames) {
-                if (tableName.startsWith("sqlite_") || tableName.startsWith("_"))
-                    continue;
-                const key = `${dbPath}::${tableName}`;
-                const lastWatermark = this.sqliteWatermarks.get(key) || 0;
-                if (isBaseline) {
-                    try {
-                        const maxCmd = `sqlite3 "${dbPath}" "SELECT IFNULL(MAX(rowid), 0) FROM \\"${tableName}\\";"`;
-                        const maxVal = parseInt(childProcess.execSync(maxCmd, { encoding: "utf-8", timeout: 1500 }).trim(), 10) || 0;
-                        this.sqliteWatermarks.set(key, maxVal);
-                    }
-                    catch {
-                        this.sqliteWatermarks.set(key, 0);
-                    }
-                    continue;
-                }
-                const queryCmd = `sqlite3 -json "${dbPath}" "SELECT rowid as _rowid, * FROM \\"${tableName}\\" WHERE rowid > ${lastWatermark} ORDER BY rowid ASC;"`;
-                const jsonOut = childProcess.execSync(queryCmd, { encoding: "utf-8", timeout: 2500 }).trim();
-                if (!jsonOut || jsonOut === "[]")
-                    continue;
-                const rows = JSON.parse(jsonOut);
+                const rows = this.querySqlitePython(dbPath, `SELECT rowid as _rowid, * FROM "${tableName}" WHERE rowid > ? ORDER BY rowid ASC`, [lastWatermark]);
                 let currentMax = lastWatermark;
                 for (const row of rows) {
                     const rowId = Number(row._rowid);
@@ -225,8 +179,10 @@ export class OpenClawSessionWatcher {
                 }
                 this.sqliteWatermarks.set(key, currentMax);
             }
+            catch (err) {
+                // Query error
+            }
         }
-        catch { }
     }
     processSqliteRow(row, dbPath, tableName) {
         const { role, content, sessionKey } = this.extractRoleAndContent(row);

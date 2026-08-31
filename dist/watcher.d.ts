@@ -2,7 +2,7 @@
  * Comprehensive Session Watcher for OpenClaw
  *
  * Monitors OpenClaw's per-agent SQLite databases (~/.openclaw/agents/ * /agent/openclaw-agent.sqlite)
- * and workspace memory files, extracting active dialogue turns and syncing them to TencentDB L0.
+ * using Python3 / native SQLite, extracting active dialogue turns and syncing them to TencentDB L0.
  */
 import type { TencentDBClient } from "./client.js";
 interface Logger {
@@ -26,9 +26,8 @@ export declare class OpenClawSessionWatcher {
     private scanAll;
     private scanSqliteDatabases;
     private findSqlitePaths;
+    private querySqlitePython;
     private inspectAndSyncSqlite;
-    private readSqliteWithNode;
-    private readSqliteWithCli;
     private processSqliteRow;
     private extractRoleAndContent;
     private scanTextFiles;

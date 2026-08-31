@@ -8,6 +8,35 @@ import path from "node:path";
 import os from "node:os";
 import childProcess from "node:child_process";
 import { TencentDBClient } from "./client.js";
+function querySqliteWithPython(dbPath, query) {
+    const pyCode = `
+import sqlite3, json, sys
+try:
+    conn = sqlite3.connect(f'file:{sys.argv[1]}?mode=ro', uri=True)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    rows = [dict(r) for r in c.execute(sys.argv[2]).fetchall()]
+    print(json.dumps(rows))
+except Exception as e:
+    print(json.dumps({"error": str(e)}))
+`;
+    try {
+        const res = childProcess.execFileSync("python3", ["-c", pyCode, dbPath, query], {
+            encoding: "utf-8",
+            timeout: 3000,
+        });
+        const parsed = JSON.parse(res.trim());
+        if (parsed && !Array.isArray(parsed) && parsed.error) {
+            console.log(`    Python SQLite error: ${parsed.error}`);
+            return [];
+        }
+        return Array.isArray(parsed) ? parsed : [];
+    }
+    catch (e) {
+        console.log(`    Python invocation failed: ${e.message}`);
+        return [];
+    }
+}
 async function runDiagnostics() {
     console.log("=================================================");
     console.log(" OpenClaw TencentDB Diagnostics & State Inspector");
@@ -83,7 +112,9 @@ async function runDiagnostics() {
                     }
                 }
                 else if (item.isFile() && (item.name.endsWith(".sqlite") || item.name.endsWith(".db"))) {
-                    sqliteFiles.push(full);
+                    if (!item.name.includes("-wal") && !item.name.includes("-shm") && !item.name.includes("-lock")) {
+                        sqliteFiles.push(full);
+                    }
                 }
             }
         }
@@ -94,63 +125,26 @@ async function runDiagnostics() {
     for (const f of sqliteFiles) {
         console.log(`  -> ${f}`);
     }
-    // 4. Inspect each SQLite database
-    console.log("\n[4] Inspecting SQLite Tables & Recent Records...");
-    let DatabaseSyncClass = null;
-    try {
-        DatabaseSyncClass = require("node:sqlite").DatabaseSync;
-    }
-    catch { }
+    // 4. Inspect each SQLite database using Python
+    console.log("\n[4] Inspecting SQLite Tables & Recent Records via Python3...");
     for (const dbPath of sqliteFiles) {
         console.log(`\n--- Inspecting: ${dbPath} ---`);
-        if (DatabaseSyncClass) {
-            try {
-                const db = new DatabaseSyncClass(dbPath, { readOnly: true });
-                const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
-                console.log(`Tables (${tables.length}):`, tables.map((t) => t.name).join(", "));
-                for (const t of tables) {
-                    const tName = t.name;
-                    if (tName.startsWith("sqlite_"))
-                        continue;
-                    try {
-                        const countRow = db.prepare(`SELECT count(*) as cnt FROM "${tName}"`).get();
-                        const cols = db.prepare(`PRAGMA table_info("${tName}")`).all().map((c) => c.name);
-                        console.log(`  * Table "${tName}" (rows: ${countRow.cnt}): [${cols.join(", ")}]`);
-                        if (countRow.cnt > 0) {
-                            const sample = db.prepare(`SELECT * FROM "${tName}" ORDER BY rowid DESC LIMIT 2`).all();
-                            console.log(`    Recent sample:`, JSON.stringify(sample, null, 2).slice(0, 300));
-                        }
-                    }
-                    catch (te) {
-                        console.log(`    Error reading table ${tName}: ${te.message}`);
-                    }
-                }
-                db.close();
-            }
-            catch (err) {
-                console.log(`DatabaseSync error on ${dbPath}: ${err.message}`);
+        const tables = querySqliteWithPython(dbPath, "SELECT name FROM sqlite_master WHERE type='table'");
+        console.log(`Tables (${tables.length}):`, tables.map((t) => t.name).join(", "));
+        for (const t of tables) {
+            const tName = t.name;
+            if (tName.startsWith("sqlite_") || tName.startsWith("_"))
+                continue;
+            const countRows = querySqliteWithPython(dbPath, `SELECT count(*) as cnt FROM "${tName}"`);
+            const rowCount = countRows[0]?.cnt || 0;
+            const cols = querySqliteWithPython(dbPath, `PRAGMA table_info("${tName}")`);
+            const colNames = cols.map((c) => c.name);
+            console.log(`  * Table "${tName}" (rows: ${rowCount}): [${colNames.join(", ")}]`);
+            if (rowCount > 0) {
+                const sample = querySqliteWithPython(dbPath, `SELECT * FROM "${tName}" ORDER BY rowid DESC LIMIT 2`);
+                console.log(`    Recent sample:`, JSON.stringify(sample, null, 2).slice(0, 350));
             }
         }
-        else {
-            console.log(`(node:sqlite not available, trying sqlite3 CLI)`);
-            try {
-                const tables = childProcess.execSync(`sqlite3 "${dbPath}" ".tables"`, { encoding: "utf-8" }).trim();
-                console.log(`Tables: ${tables}`);
-            }
-            catch (e) {
-                console.log(`sqlite3 CLI error: ${e.message}`);
-            }
-        }
-    }
-    // 5. Inspect Workspace Memory & Session files
-    console.log("\n[5] Inspecting Workspace Memory Files...");
-    const memDir = path.join(rootDir, "workspace", "memory");
-    if (fs.existsSync(memDir)) {
-        const files = fs.readdirSync(memDir);
-        console.log(`Found ${files.length} file(s) in ${memDir}:`, files.slice(0, 10).join(", "));
-    }
-    else {
-        console.log(`Directory ${memDir} does not exist.`);
     }
     console.log("\n=================================================");
     console.log(" Diagnostics complete.");
