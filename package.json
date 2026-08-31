@@ -3,10 +3,11 @@
   "version": "1.0.0",
   "type": "module",
   "description": "Remote TencentDB Agent Memory Plugin for OpenClaw — bidirectional recall prefetching, turn synchronization, and team memory tools for central TencentDB clusters.",
-  "main": "index.ts",
-  "types": "types.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "openclaw": {
     "extensions": [
+      "./dist/index.js",
       "./index.ts"
     ]
   },
