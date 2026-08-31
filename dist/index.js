@@ -44,8 +44,11 @@ const memoryPlugin = {
         const maxRecallResults = pluginConfig.maxRecallResults ?? 3;
         const client = new TencentDBClient(pluginConfig);
         api.logger.info(`[openclaw-memory-tencentdb] Plugin registered (core: ${pluginConfig.coreUrl || "default"}, import: ${pluginConfig.importUrl || "default"}, team: ${client.getTeamId()}, agent: ${client.getAgentId()}, userKey configured: ${Boolean(pluginConfig.userKey)})`);
-        let currentSessionId;
-        // ── 1. Auto-Recall Hook ────────────────────────────────────────────
+        // Track active user prompts per session so turn sync always has the user question
+        const sessionPrompts = new Map();
+        let fallbackLastPrompt = "";
+        let lastSyncedSignature = "";
+        // ── 1. Auto-Recall Hook (before_agent_start / before_turn) ──────────
         if (autoRecall) {
             const handleRecall = async (event, ctx) => {
                 let prompt = "";
@@ -58,21 +61,26 @@ const memoryPlugin = {
                 else if (typeof event?.message === "string") {
                     prompt = event.message.trim();
                 }
-                if (!prompt || prompt.length < 4) {
+                if (!prompt)
                     return;
+                const sessionId = ctx?.sessionKey || ctx?.sessionId || event?.sessionId || "openclaw-default";
+                // Clean prompt for memory capture reference
+                const cleanPrompt = prompt.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
+                if (cleanPrompt) {
+                    sessionPrompts.set(sessionId, cleanPrompt);
+                    fallbackLastPrompt = cleanPrompt;
                 }
-                const sessionId = ctx?.sessionKey || ctx?.sessionId || event?.sessionId;
-                if (sessionId)
-                    currentSessionId = sessionId;
+                if (cleanPrompt.length < 4)
+                    return;
                 // Skip trivial messages
-                if (/^(hi|hello|hey|ok|danke|thx|thanks|hallo|ja|nein|yes|no)$/i.test(prompt)) {
+                if (/^(hi|hello|hey|ok|danke|thx|thanks|hallo|ja|nein|yes|no)$/i.test(cleanPrompt)) {
                     return;
                 }
                 try {
                     const recalledSections = [];
                     // 1. Search conversation history (L0/L1)
                     try {
-                        const convRes = await client.searchConversation(prompt, maxRecallResults);
+                        const convRes = await client.searchConversation(cleanPrompt, maxRecallResults);
                         const messages = convRes?.data?.messages || [];
                         const validMessages = messages.filter((m) => (m.score ?? 1) >= scoreThreshold && m.content);
                         if (validMessages.length > 0) {
@@ -85,11 +93,11 @@ const memoryPlugin = {
                         }
                     }
                     catch (err) {
-                        api.logger.warn(`[openclaw-memory-tencentdb] Conversation search failed: ${String(err)}`);
+                        api.logger.warn(`[openclaw-memory-tencentdb] Conversation search failed: ${err.message || String(err)}`);
                     }
                     // 2. Search skills / distilled knowledge
                     try {
-                        const skillRes = await client.searchSkills(prompt, 2);
+                        const skillRes = await client.searchSkills(cleanPrompt, 2);
                         const items = skillRes?.data?.items || [];
                         if (items.length > 0) {
                             const lines = items.map((item) => {
@@ -100,7 +108,7 @@ const memoryPlugin = {
                         }
                     }
                     catch (err) {
-                        api.logger.warn(`[openclaw-memory-tencentdb] Skill search failed: ${String(err)}`);
+                        api.logger.warn(`[openclaw-memory-tencentdb] Skill search failed: ${err.message || String(err)}`);
                     }
                     if (recalledSections.length === 0) {
                         return;
@@ -112,111 +120,111 @@ const memoryPlugin = {
                     };
                 }
                 catch (err) {
-                    api.logger.warn(`[openclaw-memory-tencentdb] Recall error: ${String(err)}`);
+                    api.logger.warn(`[openclaw-memory-tencentdb] Recall error: ${err.message || String(err)}`);
                 }
             };
             api.on("before_agent_start", handleRecall);
             api.on("before_turn", handleRecall);
+            api.on("before_agent_run", handleRecall);
         }
-        // ── 2. Auto-Capture Hook ────────────────────────────────────────────
+        // ── 2. Auto-Capture Hook (agent_end / after_turn / turn_end) ────────
         if (autoCapture) {
-            let lastSyncedSignature = "";
             const handleCapture = async (event, ctx) => {
-                const rawMessages = event?.messages || event?.history || event?.conversation;
                 const sessionId = ctx?.sessionKey ||
                     ctx?.sessionId ||
                     event?.sessionId ||
-                    currentSessionId ||
-                    "openclaw-session";
-                const formattedMessages = [];
+                    "openclaw-default";
+                let userText = "";
+                let assistantText = "";
+                // 1. Check message list in event
+                const rawMessages = event?.messages || event?.history || event?.conversation;
                 if (Array.isArray(rawMessages) && rawMessages.length > 0) {
-                    const recentMessages = rawMessages.slice(-10);
-                    for (const msg of recentMessages) {
+                    for (let i = rawMessages.length - 1; i >= 0; i--) {
+                        const msg = rawMessages[i];
                         if (!msg || typeof msg !== "object")
                             continue;
                         const role = String(msg.role || msg.sender || msg.type || "").toLowerCase();
-                        if (role !== "user" && role !== "assistant" && role !== "model" && role !== "human") {
-                            continue;
-                        }
-                        const standardRole = (role === "model" || role === "assistant") ? "assistant" : "user";
-                        let textContent = "";
+                        let text = "";
                         if (typeof msg.content === "string") {
-                            textContent = msg.content;
+                            text = msg.content;
                         }
                         else if (typeof msg.text === "string") {
-                            textContent = msg.text;
+                            text = msg.text;
                         }
                         else if (typeof msg.message === "string") {
-                            textContent = msg.message;
+                            text = msg.message;
                         }
                         else if (Array.isArray(msg.content)) {
-                            textContent = msg.content
+                            text = msg.content
                                 .filter((c) => c && typeof c === "object" && typeof c.text === "string")
                                 .map((c) => c.text)
                                 .join("\n");
                         }
-                        if (!textContent)
+                        if (!text)
                             continue;
-                        // Strip injected memory context
-                        if (textContent.includes("<tencentdb-memory>")) {
-                            textContent = textContent.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
-                            if (!textContent)
-                                continue;
+                        if ((role === "assistant" || role === "model" || role === "bot") && !assistantText) {
+                            assistantText = text.trim();
                         }
-                        formattedMessages.push({
-                            role: standardRole,
-                            content: textContent.trim(),
-                        });
+                        else if ((role === "user" || role === "human") && !userText) {
+                            userText = text.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
+                        }
+                        if (userText && assistantText)
+                            break;
                     }
                 }
-                // Fallback to direct event.prompt / event.response
-                if (formattedMessages.length === 0) {
-                    const userPrompt = typeof event?.prompt === "string" ? event.prompt.trim() : "";
-                    const assistantResp = typeof event?.response === "string"
-                        ? event.response.trim()
-                        : typeof event?.output === "string"
-                            ? event.output.trim()
-                            : typeof event?.text === "string"
-                                ? event.text.trim()
-                                : "";
-                    if (userPrompt) {
-                        formattedMessages.push({
-                            role: "user",
-                            content: userPrompt.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim(),
-                        });
+                // 2. If user text is still empty, get from prompt or stored sessionPrompts
+                if (!userText) {
+                    if (typeof event?.prompt === "string" && event.prompt.trim()) {
+                        userText = event.prompt.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
                     }
-                    if (assistantResp) {
-                        formattedMessages.push({ role: "assistant", content: assistantResp });
+                    else if (sessionPrompts.has(sessionId)) {
+                        userText = sessionPrompts.get(sessionId) || "";
+                    }
+                    else if (fallbackLastPrompt) {
+                        userText = fallbackLastPrompt;
                     }
                 }
-                if (formattedMessages.length === 0) {
+                // 3. If assistant text is still empty, get from direct response/output fields
+                if (!assistantText) {
+                    if (typeof event?.response === "string" && event.response.trim()) {
+                        assistantText = event.response.trim();
+                    }
+                    else if (typeof event?.output === "string" && event.output.trim()) {
+                        assistantText = event.output.trim();
+                    }
+                    else if (typeof event?.text === "string" && event.text.trim()) {
+                        assistantText = event.text.trim();
+                    }
+                    else if (typeof event?.content === "string" && event.content.trim()) {
+                        assistantText = event.content.trim();
+                    }
+                }
+                if (!userText || !assistantText) {
+                    api.logger.debug?.(`[openclaw-memory-tencentdb] Capture skipped: incomplete turn (user: ${Boolean(userText)}, assistant: ${Boolean(assistantText)})`);
                     return;
                 }
-                // Ensure we have at least one user and one assistant message
-                const hasUser = formattedMessages.some((m) => m.role === "user");
-                const hasAssistant = formattedMessages.some((m) => m.role === "assistant");
-                if (!hasUser || !hasAssistant) {
-                    return;
-                }
-                const signature = formattedMessages.map((m) => `${m.role}:${m.content}`).join(":::");
+                const signature = `${sessionId}:::${userText}:::${assistantText}`;
                 if (signature === lastSyncedSignature) {
                     return; // Deduplicate
                 }
                 lastSyncedSignature = signature;
-                api.logger.info(`[openclaw-memory-tencentdb] Syncing ${formattedMessages.length} message(s) to TencentDB for session: ${sessionId}...`);
-                // Send to TencentDB Panel import API
+                api.logger.info(`[openclaw-memory-tencentdb] Syncing turn to TencentDB Panel for session: ${sessionId} (user: ${userText.slice(0, 40)}...)`);
                 client
-                    .importTurn(sessionId, formattedMessages)
+                    .importTurn(sessionId, [
+                    { role: "user", content: userText },
+                    { role: "assistant", content: assistantText },
+                ])
                     .then((res) => {
-                    api.logger.info(`[openclaw-memory-tencentdb] Successfully synced ${formattedMessages.length} turn(s) to TencentDB (session: ${sessionId})`);
+                    api.logger.info(`[openclaw-memory-tencentdb] Successfully synced turn to TencentDB (session: ${sessionId})`);
                 })
                     .catch((err) => {
-                    api.logger.warn(`[openclaw-memory-tencentdb] Background turn sync failed: ${String(err)}`);
+                    api.logger.warn(`[openclaw-memory-tencentdb] Background turn sync failed: ${err.message || String(err)}`);
                 });
             };
             api.on("agent_end", handleCapture);
             api.on("after_turn", handleCapture);
             api.on("turn_end", handleCapture);
+            api.on("message_sending", handleCapture);
         }
         // ── 3. Register Explicit Tools ──────────────────────────────────────
         // Tool 1: Conversation Search
