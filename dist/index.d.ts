@@ -1,10 +1,10 @@
 /**
  * OpenClaw Remote TencentDB Agent Memory Plugin
  *
- * Clean, non-blocking native memory integration:
+ * Robust bidirectional memory integration:
  * - Pre-turn semantic recall (before_agent_start)
- * - Real-time turn capture (agent_end)
- * - Safe context injection without blocking agent runs
+ * - Multi-turn capture (agent_end) with support for Thinking Models (Gemini 3.7 / Claude 3.7)
+ * - Tool-use & multi-block message parsing
  */
 interface OpenClawPluginApi {
     config?: Record<string, any>;

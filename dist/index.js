@@ -1,10 +1,10 @@
 /**
  * OpenClaw Remote TencentDB Agent Memory Plugin
  *
- * Clean, non-blocking native memory integration:
+ * Robust bidirectional memory integration:
  * - Pre-turn semantic recall (before_agent_start)
- * - Real-time turn capture (agent_end)
- * - Safe context injection without blocking agent runs
+ * - Multi-turn capture (agent_end) with support for Thinking Models (Gemini 3.7 / Claude 3.7)
+ * - Tool-use & multi-block message parsing
  */
 import { Type } from "@sinclair/typebox";
 import { TencentDBClient } from "./client.js";
@@ -33,29 +33,61 @@ function resolvePluginConfig(api) {
     }
     return api.pluginConfig || api.config || {};
 }
-function extractText(val) {
+function extractMessageText(msg) {
+    if (!msg)
+        return "";
+    if (typeof msg === "string")
+        return msg.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
+    const textParts = [];
+    const thoughtParts = [];
+    const rawContent = msg.content !== undefined ? msg.content : msg.text !== undefined ? msg.text : msg.message;
+    if (typeof rawContent === "string") {
+        textParts.push(rawContent);
+    }
+    else if (Array.isArray(rawContent)) {
+        for (const block of rawContent) {
+            if (typeof block === "string") {
+                textParts.push(block);
+            }
+            else if (block && typeof block === "object") {
+                const bType = String(block.type || "").toLowerCase();
+                const bText = typeof block.text === "string" ? block.text : typeof block.content === "string" ? block.content : "";
+                if (bText) {
+                    if (bType === "thought" || bType === "thinking") {
+                        thoughtParts.push(bText);
+                    }
+                    else {
+                        textParts.push(bText);
+                    }
+                }
+            }
+        }
+    }
+    else if (Array.isArray(msg.parts)) {
+        for (const part of msg.parts) {
+            if (typeof part === "string")
+                textParts.push(part);
+            else if (part && typeof part.text === "string")
+                textParts.push(part.text);
+        }
+    }
+    // If text blocks exist, prefer them over thought traces
+    const resultText = textParts.length > 0 ? textParts.join("\n") : thoughtParts.join("\n");
+    return resultText.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
+}
+function extractFallbackText(val) {
     if (!val)
         return "";
     if (typeof val === "string")
-        return val.trim();
-    if (typeof val.text === "string")
-        return val.text.trim();
-    if (typeof val.content === "string")
-        return val.content.trim();
-    if (typeof val.message === "string")
-        return val.message.trim();
+        return val.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
     if (typeof val.finalAnswer === "string")
-        return val.finalAnswer.trim();
+        return extractFallbackText(val.finalAnswer);
     if (typeof val.response === "string")
-        return val.response.trim();
+        return extractFallbackText(val.response);
     if (typeof val.output === "string")
-        return val.output.trim();
+        return extractFallbackText(val.output);
     if (Array.isArray(val)) {
-        return val
-            .map((item) => extractText(item))
-            .filter(Boolean)
-            .join("\n")
-            .trim();
+        return val.map((item) => extractFallbackText(item)).filter(Boolean).join("\n").trim();
     }
     return "";
 }
@@ -73,23 +105,21 @@ const memoryPlugin = {
         const client = new TencentDBClient(pluginConfig);
         api.logger.info(`[openclaw-memory-tencentdb] Plugin registered (core: ${pluginConfig.coreUrl || "default"}, import: ${pluginConfig.importUrl || "default"}, team: ${client.getTeamId()}, agent: ${client.getAgentId()}, userKey configured: ${Boolean(pluginConfig.userKey)})`);
         const syncedTurnSignatures = new Set();
-        // ── 1. Auto-Recall (before_agent_start ONLY) ───────────────────────
+        // ── 1. Auto-Recall Hook (before_agent_start) ───────────────────────
         if (autoRecall) {
             api.on("before_agent_start", async (event, ctx) => {
-                const prompt = extractText(event?.prompt || event?.content || event?.message || event?.text);
-                if (!prompt)
+                const prompt = extractMessageText(event);
+                if (!prompt || prompt.length < 4)
                     return;
-                const cleanPrompt = prompt.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
-                if (cleanPrompt.length < 4)
-                    return;
-                if (/^(hi|hello|hey|ok|danke|thx|thanks|hallo|ja|nein|yes|no)$/i.test(cleanPrompt)) {
+                // Skip trivial messages
+                if (/^(hi|hello|hey|ok|danke|thx|thanks|hallo|ja|nein|yes|no)$/i.test(prompt)) {
                     return;
                 }
                 try {
                     const recalledSections = [];
                     // 1. Search conversation history (L0/L1)
                     try {
-                        const convRes = await client.searchConversation(cleanPrompt, maxRecallResults);
+                        const convRes = await client.searchConversation(prompt, maxRecallResults);
                         const messages = convRes?.data?.messages || [];
                         const validMessages = messages.filter((m) => (m.score ?? 1) >= scoreThreshold && m.content);
                         if (validMessages.length > 0) {
@@ -106,7 +136,7 @@ const memoryPlugin = {
                     }
                     // 2. Search skills / distilled knowledge
                     try {
-                        const skillRes = await client.searchSkills(cleanPrompt, 2);
+                        const skillRes = await client.searchSkills(prompt, 2);
                         const items = skillRes?.data?.items || [];
                         if (items.length > 0) {
                             const lines = items.map((item) => {
@@ -133,56 +163,56 @@ const memoryPlugin = {
                 }
             });
         }
-        // ── 2. Auto-Capture (agent_end ONLY) ───────────────────────────────
+        // ── 2. Auto-Capture Hook (agent_end) ───────────────────────────────
         if (autoCapture) {
             api.on("agent_end", async (event, ctx) => {
                 const sKey = ctx?.sessionKey || event?.sessionKey || "main";
-                if (!event?.messages || !Array.isArray(event.messages) || event.messages.length === 0) {
-                    return;
-                }
-                const recentMessages = event.messages.slice(-8);
-                let lastUser = "";
-                let lastAssistant = "";
-                for (const msg of recentMessages) {
+                const messages = Array.isArray(event?.messages) ? event.messages : [];
+                let lastUserText = "";
+                let lastAssistantText = "";
+                // Iterate through messages in reverse to find the latest completed turn
+                for (let i = messages.length - 1; i >= 0; i--) {
+                    const msg = messages[i];
                     if (!msg || typeof msg !== "object")
                         continue;
                     const role = String(msg.role || "").toLowerCase();
-                    let textContent = "";
-                    const content = msg.content;
-                    if (typeof content === "string") {
-                        textContent = content;
+                    const text = extractMessageText(msg);
+                    if (!lastAssistantText && (role === "assistant" || role === "model" || role === "bot") && text) {
+                        lastAssistantText = text;
                     }
-                    else if (Array.isArray(content)) {
-                        for (const b of content) {
-                            if (b && typeof b === "object" && typeof b.text === "string") {
-                                textContent += (textContent ? "\n" : "") + b.text;
-                            }
+                    else if (lastAssistantText && !lastUserText && (role === "user" || role === "human") && text) {
+                        lastUserText = text;
+                        break;
+                    }
+                }
+                // If user text was not found before assistant in array, scan forward for any user message
+                if (!lastUserText) {
+                    for (const msg of messages) {
+                        const role = String(msg?.role || "").toLowerCase();
+                        if (role === "user" || role === "human") {
+                            const text = extractMessageText(msg);
+                            if (text)
+                                lastUserText = text;
                         }
                     }
-                    if (!textContent)
-                        continue;
-                    textContent = textContent.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
-                    if (!textContent)
-                        continue;
-                    if (role === "user" || role === "human") {
-                        lastUser = textContent;
-                    }
-                    else if (role === "assistant" || role === "model") {
-                        lastAssistant = textContent;
-                    }
                 }
-                if (!lastUser || !lastAssistant) {
+                // Fallback for assistant text from event response / finalAnswer
+                if (!lastAssistantText) {
+                    lastAssistantText = extractFallbackText(event?.finalAnswer || event?.response || event?.output);
+                }
+                if (!lastUserText || !lastAssistantText) {
                     return;
                 }
-                const sig = `${lastUser}:::${lastAssistant}`;
-                if (syncedTurnSignatures.has(sig))
-                    return;
-                syncedTurnSignatures.add(sig);
-                api.logger.info(`[openclaw-memory-tencentdb] [agent_end] Syncing turn to TencentDB (user: "${lastUser.slice(0, 35)}...")`);
+                const signature = `${lastUserText}:::${lastAssistantText}`;
+                if (syncedTurnSignatures.has(signature)) {
+                    return; // Already synced
+                }
+                syncedTurnSignatures.add(signature);
+                api.logger.info(`[openclaw-memory-tencentdb] [agent_end] Syncing turn to TencentDB (user: "${lastUserText.slice(0, 30)}...", assistant: "${lastAssistantText.slice(0, 30)}...")`);
                 try {
                     await client.importTurn(`openclaw-${sKey}`, [
-                        { role: "user", content: lastUser },
-                        { role: "assistant", content: lastAssistant },
+                        { role: "user", content: lastUserText },
+                        { role: "assistant", content: lastAssistantText },
                     ]);
                     api.logger.info(`[openclaw-memory-tencentdb] [agent_end] Successfully synced turn to TencentDB L0!`);
                 }
