@@ -33,11 +33,17 @@ interface OpenClawPluginApi {
 }
 
 export default function register(api: OpenClawPluginApi) {
-  const pluginConfig: TencentDBConfig =
+  // Support both wrapped "config" property and direct plugin config
+  const rawConfig =
     api.config?.["openclaw-memory-tencentdb"] ||
     api.config?.["memory-tencentdb"] ||
-    api.config?.tencentdb ||
+    api.config ||
     {};
+
+  const pluginConfig: TencentDBConfig =
+    rawConfig?.config && typeof rawConfig.config === "object"
+      ? rawConfig.config
+      : rawConfig;
 
   const autoRecall = pluginConfig.autoRecall !== false;
   const autoCapture = pluginConfig.autoCapture !== false;

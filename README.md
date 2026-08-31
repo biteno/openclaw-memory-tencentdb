@@ -74,31 +74,36 @@ openclaw plugins install biteno/openclaw-memory-tencentdb
 
 ---
 
-## ⚙️ 2. Konfiguration (`openclaw.json`)
+## ⚙️ 2. Konfiguration (`~/.openclaw/openclaw.json`)
 
-Füge die Konfiguration in deine OpenClaw-Konfigurationsdatei (z. B. `~/.openclaw/openclaw.json`) ein:
+Füge den Plugin-Eintrag unter `plugins.entries` in deine `~/.openclaw/openclaw.json` ein:
 
 ```jsonc
 {
   "plugins": {
-    "openclaw-memory-tencentdb": {
-      "enabled": true,
-      "coreUrl": "http://<your-tencentdb-host>:8420",
-      "importUrl": "http://<your-tencentdb-host>:8125",
-      "knowledgeUrl": "http://<your-tencentdb-host>:8424",
-      "userKey": "sk-mem-YOUR_TENCENTDB_API_KEY",
-      "teamId": "team-your-team-id",
-      "agentId": "agt-your-agent-id",
-      "autoRecall": true,
-      "autoCapture": true,
-      "scoreThreshold": 0.5,
-      "maxRecallResults": 3
+    "enabled": true,
+    "entries": {
+      "openclaw-memory-tencentdb": {
+        "enabled": true,
+        "config": {
+          "coreUrl": "http://<your-tencentdb-host>:8420",
+          "importUrl": "http://<your-tencentdb-host>:8125",
+          "knowledgeUrl": "http://<your-tencentdb-host>:8424",
+          "userKey": "sk-mem-YOUR_TENCENTDB_API_KEY",
+          "teamId": "team-your-team-id",
+          "agentId": "agt-your-agent-id",
+          "autoRecall": true,
+          "autoCapture": true,
+          "scoreThreshold": 0.5,
+          "maxRecallResults": 3
+        }
+      }
     }
   }
 }
 ```
 
-> ⚠️ **Wichtig:** Setze unter `agentId` und `teamId` die für deine OpenClaw-Instanz vorgesehenen Bezeichner ein.
+> ⚠️ **OpenClaw Config Syntax:** In OpenClaw müssen die Plugin-Parameter zwingend im Unterobjekt `"config": { ... }` innerhalb von `plugins.entries.<plugin-name>` definiert werden.
 
 ### Parameter-Referenz:
 
@@ -136,11 +141,13 @@ Dem Agenten stehen automatisch folgende Werkzeuge für gezielte Abfragen zur Ver
 
 ---
 
-## 🔄 4. Neustart & Verifikation
-
-Nach dem Anpassen der Konfiguration den OpenClaw Gateway Dienst neu starten:
+## 🔄 4. Validierung, Neustart & Verifikation
 
 ```bash
+# 1. Konfiguration prüfen
+openclaw config validate
+
+# 2. Gateway neu starten
 openclaw gateway restart
 ```
 

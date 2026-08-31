@@ -57,7 +57,7 @@
   },
   "configSchema": {
     "type": "object",
-    "additionalProperties": false,
+    "additionalProperties": true,
     "properties": {
       "coreUrl": {
         "type": "string",
