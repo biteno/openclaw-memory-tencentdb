@@ -1,103 +1,108 @@
 {
   "id": "openclaw-memory-tencentdb",
   "name": "TencentDB Agent Memory (Remote)",
-  "kind": "memory",
+  "description": "Remote TencentDB Agent Memory plugin for OpenClaw — bidirectional prefetch recall & asynchronous turn sync for central TencentDB Agent Memory clusters.",
   "version": "1.0.0",
-  "description": "Remote TencentDB Agent Memory plugin for OpenClaw — connects directly to a central TencentDB MemoryCore & Panel cluster for multi-agent fleet memory, bidirectional turn sync, and prefetch recall.",
+  "kind": "memory",
+  "entry": "./dist/index.js",
+  "capabilities": ["tools", "memory", "hook"],
+  "activation": {
+    "onStartup": true,
+    "onCapabilities": ["tools", "memory", "hook"]
+  },
+  "contracts": {
+    "tools": [
+      "tdai_conversation_search",
+      "tdai_skill_search",
+      "tdai_wiki_search",
+      "tdai_codegraph_search"
+    ]
+  },
   "uiHints": {
     "coreUrl": {
-      "label": "TencentDB Core URL",
+      "label": "MemoryCore URL",
       "placeholder": "http://localhost:8420",
-      "help": "Base URL of TencentDB MemoryCore (:8420) for L0-L3 semantic search and skill recall."
+      "help": "URL of the TencentDB MemoryCore (:8420) for L0-L3 hybrid retrieval"
     },
     "importUrl": {
-      "label": "TencentDB Import URL",
+      "label": "MemoryPanel / Import URL",
       "placeholder": "http://localhost:8125",
-      "help": "Base URL of TencentDB MemoryPanel (:8125) for turn synchronization (/api/v1/chat-memory/import)."
+      "help": "URL of the TencentDB MemoryPanel (:8125) for asynchronous turn ingestion"
     },
     "knowledgeUrl": {
-      "label": "TencentDB Knowledge URL",
+      "label": "Knowledge / Wiki URL",
       "placeholder": "http://localhost:8424",
-      "help": "Base URL of TencentDB MemoryKnowledge (:8424) for Team-Wiki and Code-Graph search."
+      "help": "URL of the TencentDB MemoryKnowledge (:8424) for team wiki and codegraph"
     },
     "userKey": {
-      "label": "User API Key",
+      "label": "TencentDB User / Admin Key",
       "sensitive": true,
       "placeholder": "sk-mem-...",
-      "help": "TencentDB Access Key from .admin-key or personal user account."
+      "help": "Personal TencentDB API Key or Admin Key for authorization"
     },
     "teamId": {
       "label": "Team ID",
       "placeholder": "default",
-      "help": "Team identifier / tenant namespace in TencentDB."
+      "help": "Team identifier in TencentDB (e.g. team-thpa5ncu0p)"
     },
     "agentId": {
       "label": "Agent ID",
-      "placeholder": "agt-your-agent-id",
-      "help": "Unique Agent ID container assigned to this OpenClaw instance."
+      "placeholder": "default",
+      "help": "Agent identifier in TencentDB (e.g. agt-th8bvq00pv)"
     },
     "autoRecall": {
       "label": "Auto-Recall",
-      "help": "Automatically prefetch relevant conversations and skills before each agent turn."
+      "help": "Automatically inject relevant memories before each agent turn"
     },
     "autoCapture": {
       "label": "Auto-Capture",
-      "help": "Automatically stream completed turns to the central TencentDB cluster after each agent turn."
+      "help": "Automatically sync completed conversation turns to TencentDB L0"
     },
     "scoreThreshold": {
-      "label": "Recall Score Threshold",
+      "label": "Score Threshold",
       "placeholder": "0.5",
-      "help": "Minimum similarity score (0.0 - 1.0) for memories to be injected into context."
+      "help": "Minimum similarity score for recalled items (0.0 - 1.0). Default: 0.5"
     },
     "maxRecallResults": {
       "label": "Max Recall Results",
       "placeholder": "3",
-      "help": "Maximum number of conversation memories to inject into prompt context."
+      "help": "Maximum number of conversation memory snippets to prepend. Default: 3"
     }
   },
   "configSchema": {
     "type": "object",
-    "additionalProperties": true,
+    "additionalProperties": false,
     "properties": {
       "coreUrl": {
-        "type": "string",
-        "default": "http://localhost:8420"
+        "type": "string"
       },
       "importUrl": {
-        "type": "string",
-        "default": "http://localhost:8125"
+        "type": "string"
       },
       "knowledgeUrl": {
-        "type": "string",
-        "default": "http://localhost:8424"
+        "type": "string"
       },
       "userKey": {
         "type": "string"
       },
       "teamId": {
-        "type": "string",
-        "default": "default"
+        "type": "string"
       },
       "agentId": {
         "type": "string"
       },
       "autoRecall": {
-        "type": "boolean",
-        "default": true
+        "type": "boolean"
       },
       "autoCapture": {
-        "type": "boolean",
-        "default": true
+        "type": "boolean"
       },
       "scoreThreshold": {
-        "type": "number",
-        "default": 0.5
+        "type": "number"
       },
       "maxRecallResults": {
-        "type": "number",
-        "default": 3
+        "type": "integer"
       }
-    },
-    "required": []
+    }
   }
 }
