@@ -1,6 +1,12 @@
 /**
  * TencentDB HTTP Client for OpenClaw
+ * Uses native node:http / node:https with IPv4 affinity to prevent
+ * undici / fetch IPv6 .local resolution issues on Linux hosts.
  */
+
+import http from "node:http";
+import https from "node:https";
+import { URL } from "node:url";
 
 import type {
   TencentDBConfig,
@@ -12,10 +18,64 @@ import type {
   CodeGraphSearchResponse,
 } from "./types.js";
 
-function formatFetchError(err: any): string {
-  if (!err) return "Unknown error";
-  const cause = err.cause ? ` (cause: ${err.cause.message || err.cause.code || err.cause})` : "";
-  return `${err.message || String(err)}${cause}`;
+function postJson<T = any>(
+  urlStr: string,
+  headers: Record<string, string>,
+  bodyObj: any,
+  timeoutMs = 5000,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    try {
+      const parsed = new URL(urlStr);
+      const postData = JSON.stringify(bodyObj);
+      const isHttps = parsed.protocol === "https:";
+      const lib = isHttps ? https : http;
+
+      const req = lib.request(
+        parsed,
+        {
+          method: "POST",
+          headers: {
+            ...headers,
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(postData),
+          },
+          timeout: timeoutMs,
+          family: 4, // Force IPv4 to prevent Node.js .local / mDNS dual-stack bugs
+        },
+        (res) => {
+          let raw = "";
+          res.on("data", (chunk) => {
+            raw += chunk;
+          });
+          res.on("end", () => {
+            if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+              try {
+                resolve(JSON.parse(raw) as T);
+              } catch {
+                resolve(raw as unknown as T);
+              }
+            } else {
+              reject(new Error(`HTTP ${res.statusCode}: ${raw}`));
+            }
+          });
+        },
+      );
+
+      req.on("error", (err) => {
+        reject(new Error(`Connection to ${urlStr} failed: ${err.message}`));
+      });
+
+      req.on("timeout", () => {
+        req.destroy(new Error(`Timeout after ${timeoutMs}ms connecting to ${urlStr}`));
+      });
+
+      req.write(postData);
+      req.end();
+    } catch (err: any) {
+      reject(new Error(`Request setup error for ${urlStr}: ${err.message || String(err)}`));
+    }
+  });
 }
 
 export class TencentDBClient {
@@ -56,7 +116,6 @@ export class TencentDBClient {
       Authorization: `Bearer ${this.userKey}`,
       "x-tdai-service-id": this.teamId,
       "x-agent-id": customAgentId || this.agentId,
-      "Content-Type": "application/json",
     };
 
     const payload = {
@@ -64,22 +123,7 @@ export class TencentDBClient {
       limit,
     };
 
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(4000),
-      });
-
-      if (!res.ok) {
-        throw new Error(`Core search returned HTTP ${res.status}: ${await res.text()}`);
-      }
-
-      return (await res.json()) as ConversationSearchResponse;
-    } catch (err: any) {
-      throw new Error(`Failed connecting to Core at ${url}: ${formatFetchError(err)}`);
-    }
+    return postJson<ConversationSearchResponse>(url, headers, payload, 4000);
   }
 
   /**
@@ -91,7 +135,6 @@ export class TencentDBClient {
       Authorization: `Bearer ${this.userKey}`,
       "x-tdai-service-id": this.teamId,
       "x-agent-id": customAgentId || this.agentId,
-      "Content-Type": "application/json",
     };
 
     const payload = {
@@ -99,22 +142,7 @@ export class TencentDBClient {
       limit,
     };
 
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(4000),
-      });
-
-      if (!res.ok) {
-        throw new Error(`Skill search returned HTTP ${res.status}: ${await res.text()}`);
-      }
-
-      return (await res.json()) as SkillSearchResponse;
-    } catch (err: any) {
-      throw new Error(`Failed connecting to Skill service at ${url}: ${formatFetchError(err)}`);
-    }
+    return postJson<SkillSearchResponse>(url, headers, payload, 4000);
   }
 
   /**
@@ -131,7 +159,6 @@ export class TencentDBClient {
     const headers = {
       "X-Tdai-User-Key": this.userKey,
       "X-Tdai-Service-Id": "default",
-      "Content-Type": "application/json",
     };
 
     const payload: TurnImportPayload = {
@@ -141,22 +168,7 @@ export class TencentDBClient {
       messages,
     };
 
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(6000),
-      });
-
-      if (!res.ok) {
-        throw new Error(`Panel import returned HTTP ${res.status}: ${await res.text()}`);
-      }
-
-      return (await res.json()) as TurnImportResponse;
-    } catch (err: any) {
-      throw new Error(`Failed connecting to Panel at ${url}: ${formatFetchError(err)}`);
-    }
+    return postJson<TurnImportResponse>(url, headers, payload, 6000);
   }
 
   /**
@@ -167,7 +179,6 @@ export class TencentDBClient {
     const headers = {
       Authorization: `Bearer ${this.userKey}`,
       "x-tdai-service-id": this.teamId,
-      "Content-Type": "application/json",
     };
 
     const payload: Record<string, any> = {
@@ -179,22 +190,7 @@ export class TencentDBClient {
       payload.wiki_id = wikiId;
     }
 
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(4000),
-      });
-
-      if (!res.ok) {
-        throw new Error(`Wiki search returned HTTP ${res.status}: ${await res.text()}`);
-      }
-
-      return (await res.json()) as WikiSearchResponse;
-    } catch (err: any) {
-      throw new Error(`Failed connecting to Wiki service at ${url}: ${formatFetchError(err)}`);
-    }
+    return postJson<WikiSearchResponse>(url, headers, payload, 4000);
   }
 
   /**
@@ -205,7 +201,6 @@ export class TencentDBClient {
     const headers = {
       Authorization: `Bearer ${this.userKey}`,
       "x-tdai-service-id": this.teamId,
-      "Content-Type": "application/json",
     };
 
     const payload = {
@@ -214,21 +209,6 @@ export class TencentDBClient {
       limit,
     };
 
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(4000),
-      });
-
-      if (!res.ok) {
-        throw new Error(`CodeGraph search returned HTTP ${res.status}: ${await res.text()}`);
-      }
-
-      return (await res.json()) as CodeGraphSearchResponse;
-    } catch (err: any) {
-      throw new Error(`Failed connecting to CodeGraph service at ${url}: ${formatFetchError(err)}`);
-    }
+    return postJson<CodeGraphSearchResponse>(url, headers, payload, 4000);
   }
 }
