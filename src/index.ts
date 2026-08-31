@@ -183,7 +183,6 @@ const memoryPlugin = {
     };
 
     api.on("before_agent_start", handleRecall);
-    api.on("before_turn", handleRecall);
     api.on("before_agent_run", handleRecall);
     api.on("llm_input", (event: any) => {
       const p = extractText(event?.prompt || event?.input || event?.messages);
