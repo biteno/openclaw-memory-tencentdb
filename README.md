@@ -55,13 +55,15 @@ Im Gegensatz zum offiziellen lokalen NPM-Paket (das eine isolierte SQLite-Datenb
 
 ```bash
 # In das OpenClaw Extensions-Verzeichnis wechseln
+mkdir -p ~/.openclaw/extensions/
 cd ~/.openclaw/extensions/
 git clone https://github.com/biteno/openclaw-memory-tencentdb.git
 
-# Abhängigkeiten installieren
+# In das Verzeichnis wechseln
 cd openclaw-memory-tencentdb
-npm install
 ```
+
+*Hinweis: Das Repository enthält alle vorkompilierten Laufzeit-Dateien im Ordner `dist/`.*
 
 ---
 
@@ -69,7 +71,9 @@ npm install
 
 Füge den Plugin-Eintrag in deine `~/.openclaw/openclaw.json` ein. 
 
-> 💡 **Wichtig:** OpenClaw verwendet ein **Slot-System**. Setze `"slots": { "memory": "openclaw-memory-tencentdb" }`, damit OpenClaw das Plugin als primären Speicheranbieter aktiviert:
+> 💡 **Wichtig:** 
+> 1. Setze `"slots": { "memory": "openclaw-memory-tencentdb" }`, damit OpenClaw das Plugin als primären Speicheranbieter aktiviert.
+> 2. Setze `"hooks": { "allowConversationAccess": true }`, damit OpenClaw dem Plugin den Zugriff auf abgeschlossene Dialog-Turns (für den Turn-Sync) gestattet.
 
 ```jsonc
 {
@@ -77,7 +81,7 @@ Füge den Plugin-Eintrag in deine `~/.openclaw/openclaw.json` ein.
     "enabled": true,
     "load": {
       "paths": [
-        "~/.openclaw/extensions/openclaw-memory-tencentdb"
+        "/root/.openclaw/extensions/openclaw-memory-tencentdb"
       ]
     },
     "slots": {
@@ -86,11 +90,14 @@ Füge den Plugin-Eintrag in deine `~/.openclaw/openclaw.json` ein.
     "entries": {
       "openclaw-memory-tencentdb": {
         "enabled": true,
+        "hooks": {
+          "allowConversationAccess": true
+        },
         "config": {
           "coreUrl": "http://<your-tencentdb-host>:8420",
           "importUrl": "http://<your-tencentdb-host>:8125",
           "knowledgeUrl": "http://<your-tencentdb-host>:8424",
-          "userKey": "sk-mem-YOUR_TENCENTDB_API_KEY",
+          "userKey": "sk-mem-YOUR_TENCENTDB_KEY",
           "teamId": "team-your-team-id",
           "agentId": "agt-your-agent-id",
           "autoRecall": true,
@@ -146,14 +153,32 @@ Dem Agenten stehen automatisch folgende Werkzeuge für gezielte Abfragen zur Ver
 # 1. Konfiguration prüfen
 openclaw config validate
 
-# 2. Gateway neu starten
+# 2. Schnittstellentest durchführen (optional)
+node dist/debug.js
+
+# 3. Gateway neu starten
 openclaw gateway restart
+
+# 4. Live-Logs überwachen
+openclaw logs --follow
 ```
 
-In den Logs erscheint die erfolgreiche Initialisierung:
-```text
-[openclaw-memory-tencentdb] Loaded plugin (team: team-..., agent: agt-..., autoRecall: true, autoCapture: true)
+---
+
+## 📥 5. Einmaliger Initial-Import (Bestehende lokale Erinnerungen migrieren)
+
+Wenn der Agent bereits vor der TencentDB-Anbindung genutzt wurde und lokale Gedächtnisdateien (`MEMORY.md` sowie tägliche Notizen unter `~/.openclaw/workspace/memory/*.md`) besitzt, können diese mit dem integrierten Migrations-Tool mit einem einzigen Befehl nach TencentDB importiert werden:
+
+```bash
+cd /root/.openclaw/extensions/openclaw-memory-tencentdb
+node dist/import-memory.js
 ```
+
+**Was dieser Befehl ausführt:**
+* Liest strukturiert alle Abschnitte der Datei `MEMORY.md` aus.
+* Scannt alle historischen Markdown-Dateien im Verzeichnis `workspace/memory/`.
+* Teilt überlange Dateien (>7.000 Zeichen) automatisch in logische Chunks auf, um das API-Limit von TencentDB einzuhalten.
+* Schreibt alle Fakten lückenlos in **TencentDB L0** unter der in `openclaw.json` konfigurierten `agentId` und `teamId`.
 
 ---
 
