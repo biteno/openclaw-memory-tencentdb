@@ -182,6 +182,20 @@ node dist/import-memory.js
 
 ---
 
+## 🧪 6. Getestete & Verifizierte KI-Modelle
+
+Die bidirektionale Turn-Synchronisation (Auto-Capture) und der Kontext-Abruf (Auto-Recall) wurden mit folgenden Modell-Familien und API-Strukturen erfolgreich in der Praxis getestet und verifiziert:
+
+| Modell-Familie | Getestete Modelle | Besonderheiten & Parsing-Verhalten |
+| :--- | :--- | :--- |
+| **Anthropic Claude** | `Claude 3.5 Sonnet`, `Claude 3.7 Sonnet` | Standard ChatCompletion & strukturierte Content-Blocks |
+| **Google Gemini** | `Gemini 3.7 Flash` | Multiparts mit automatischem Herausfiltern interner `thought`-Reasoning-Blöcke |
+| **Moonshot AI** | `Kimi-k2.6` | Standard Tool-Calling & Context Expansion |
+| **MiniMax** | `MiniMax M2.7` | Standard ChatCompletion & System-Prompt Recall |
+| **Google Open-Source** | `Gemma 4:31B` (via vLLM / SGLang) | Self-Hosted Open-Source Modell-Pipeline |
+
+---
+
 ## 📄 Lizenz
 
 MIT License — Copyright (c) 2026 Biteno GmbH
