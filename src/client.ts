@@ -12,6 +12,12 @@ import type {
   CodeGraphSearchResponse,
 } from "./types.js";
 
+function formatFetchError(err: any): string {
+  if (!err) return "Unknown error";
+  const cause = err.cause ? ` (cause: ${err.cause.message || err.cause.code || err.cause})` : "";
+  return `${err.message || String(err)}${cause}`;
+}
+
 export class TencentDBClient {
   private coreUrl: string;
   private importUrl: string;
@@ -58,18 +64,22 @@ export class TencentDBClient {
       limit,
     };
 
-    const res = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(3500),
-    });
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(4000),
+      });
 
-    if (!res.ok) {
-      throw new Error(`TencentDB Core search failed with HTTP ${res.status}: ${await res.text()}`);
+      if (!res.ok) {
+        throw new Error(`Core search returned HTTP ${res.status}: ${await res.text()}`);
+      }
+
+      return (await res.json()) as ConversationSearchResponse;
+    } catch (err: any) {
+      throw new Error(`Failed connecting to Core at ${url}: ${formatFetchError(err)}`);
     }
-
-    return (await res.json()) as ConversationSearchResponse;
   }
 
   /**
@@ -89,18 +99,22 @@ export class TencentDBClient {
       limit,
     };
 
-    const res = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(3500),
-    });
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(4000),
+      });
 
-    if (!res.ok) {
-      throw new Error(`TencentDB Skill search failed with HTTP ${res.status}: ${await res.text()}`);
+      if (!res.ok) {
+        throw new Error(`Skill search returned HTTP ${res.status}: ${await res.text()}`);
+      }
+
+      return (await res.json()) as SkillSearchResponse;
+    } catch (err: any) {
+      throw new Error(`Failed connecting to Skill service at ${url}: ${formatFetchError(err)}`);
     }
-
-    return (await res.json()) as SkillSearchResponse;
   }
 
   /**
@@ -127,18 +141,22 @@ export class TencentDBClient {
       messages,
     };
 
-    const res = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(6000),
-    });
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(6000),
+      });
 
-    if (!res.ok) {
-      throw new Error(`TencentDB Panel import failed with HTTP ${res.status}: ${await res.text()}`);
+      if (!res.ok) {
+        throw new Error(`Panel import returned HTTP ${res.status}: ${await res.text()}`);
+      }
+
+      return (await res.json()) as TurnImportResponse;
+    } catch (err: any) {
+      throw new Error(`Failed connecting to Panel at ${url}: ${formatFetchError(err)}`);
     }
-
-    return (await res.json()) as TurnImportResponse;
   }
 
   /**
@@ -161,18 +179,22 @@ export class TencentDBClient {
       payload.wiki_id = wikiId;
     }
 
-    const res = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(4000),
-    });
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(4000),
+      });
 
-    if (!res.ok) {
-      throw new Error(`TencentDB Wiki search failed with HTTP ${res.status}: ${await res.text()}`);
+      if (!res.ok) {
+        throw new Error(`Wiki search returned HTTP ${res.status}: ${await res.text()}`);
+      }
+
+      return (await res.json()) as WikiSearchResponse;
+    } catch (err: any) {
+      throw new Error(`Failed connecting to Wiki service at ${url}: ${formatFetchError(err)}`);
     }
-
-    return (await res.json()) as WikiSearchResponse;
   }
 
   /**
@@ -192,17 +214,21 @@ export class TencentDBClient {
       limit,
     };
 
-    const res = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(4000),
-    });
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(4000),
+      });
 
-    if (!res.ok) {
-      throw new Error(`TencentDB CodeGraph search failed with HTTP ${res.status}: ${await res.text()}`);
+      if (!res.ok) {
+        throw new Error(`CodeGraph search returned HTTP ${res.status}: ${await res.text()}`);
+      }
+
+      return (await res.json()) as CodeGraphSearchResponse;
+    } catch (err: any) {
+      throw new Error(`Failed connecting to CodeGraph service at ${url}: ${formatFetchError(err)}`);
     }
-
-    return (await res.json()) as CodeGraphSearchResponse;
   }
 }
