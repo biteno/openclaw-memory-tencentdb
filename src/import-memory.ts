@@ -2,7 +2,7 @@
  * One-Shot Batch Importer: OpenClaw Local Memory -> TencentDB L0
  *
  * Reads ~/.openclaw/workspace/MEMORY.md and ~/.openclaw/workspace/memory/*.md
- * and imports all facts cleanly into central TencentDB for agent Leon.
+ * Automatically chunks large files (>7000 chars) to adhere to TencentDB limits.
  *
  * Run with: node /root/.openclaw/extensions/openclaw-memory-tencentdb/dist/import-memory.js
  */
@@ -12,9 +12,35 @@ import path from "node:path";
 import os from "node:os";
 import { TencentDBClient } from "./client.js";
 
+function chunkText(text: string, maxLen = 7000): string[] {
+  if (text.length <= maxLen) return [text];
+
+  const chunks: string[] = [];
+  const lines = text.split("\n");
+  let currentChunk = "";
+
+  for (const line of lines) {
+    if ((currentChunk + "\n" + line).length > maxLen) {
+      if (currentChunk.trim()) {
+        chunks.push(currentChunk.trim());
+      }
+      currentChunk = line;
+    } else {
+      currentChunk += (currentChunk ? "\n" : "") + line;
+    }
+  }
+
+  if (currentChunk.trim()) {
+    chunks.push(currentChunk.trim());
+  }
+
+  return chunks;
+}
+
 async function runImport() {
   console.log("=================================================");
   console.log(" OpenClaw -> TencentDB Memory Migration Tool");
+  console.log(" (with automatic chunking for >8192 char limit)");
   console.log("=================================================\n");
 
   const home = os.homedir();
@@ -63,15 +89,20 @@ async function runImport() {
       const body = lines.slice(1).join("\n").trim();
 
       if (body) {
-        try {
-          await client.importTurn("openclaw-migration-memory-md", [
-            { role: "user", content: `Faktensammlung / Kontext zu: ${title}` },
-            { role: "assistant", content: body },
-          ]);
-          console.log(`  [✓] Imported section: "${title}"`);
-          totalImported++;
-        } catch (e: any) {
-          console.log(`  [!] Failed section "${title}": ${e.message}`);
+        const chunks = chunkText(body, 7000);
+        for (let idx = 0; idx < chunks.length; idx++) {
+          const chunk = chunks[idx];
+          const suffix = chunks.length > 1 ? ` (Teil ${idx + 1}/${chunks.length})` : "";
+          try {
+            await client.importTurn(`openclaw-migration-memory-md-${title.replace(/[^a-zA-Z0-9_-]/g, "_")}-${idx}`, [
+              { role: "user", content: `Faktensammlung / Kontext zu: ${title}${suffix}` },
+              { role: "assistant", content: chunk },
+            ]);
+            console.log(`  [✓] Imported section: "${title}"${suffix}`);
+            totalImported++;
+          } catch (e: any) {
+            console.log(`  [!] Failed section "${title}"${suffix}: ${e.message}`);
+          }
         }
       }
     }
@@ -89,21 +120,26 @@ async function runImport() {
       const content = fs.readFileSync(filePath, "utf-8").trim();
       if (!content || content.length < 20) continue;
 
-      try {
-        await client.importTurn(`openclaw-migration-${file.replace(".md", "")}`, [
-          { role: "user", content: `Erinnerungen und Notizen vom Datum / Thema: ${file}` },
-          { role: "assistant", content: content },
-        ]);
-        console.log(`  [✓] Imported file: ${file}`);
-        totalImported++;
-      } catch (e: any) {
-        console.log(`  [!] Failed file ${file}: ${e.message}`);
+      const chunks = chunkText(content, 7000);
+      for (let idx = 0; idx < chunks.length; idx++) {
+        const chunk = chunks[idx];
+        const suffix = chunks.length > 1 ? ` (Teil ${idx + 1}/${chunks.length})` : "";
+        try {
+          await client.importTurn(`openclaw-migration-${file.replace(".md", "")}-${idx}`, [
+            { role: "user", content: `Erinnerungen und Notizen vom Datum / Thema: ${file}${suffix}` },
+            { role: "assistant", content: chunk },
+          ]);
+          console.log(`  [✓] Imported file: ${file}${suffix}`);
+          totalImported++;
+        } catch (e: any) {
+          console.log(`  [!] Failed file ${file}${suffix}: ${e.message}`);
+        }
       }
     }
   }
 
   console.log("\n=================================================");
-  console.log(` Migration complete! Total entries imported: ${totalImported}`);
+  console.log(` Migration complete! Total entries/chunks imported: ${totalImported}`);
   console.log("=================================================");
 }
 

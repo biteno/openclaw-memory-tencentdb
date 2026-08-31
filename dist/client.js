@@ -122,11 +122,15 @@ export class TencentDBClient {
             "X-Tdai-User-Key": this.userKey,
             "X-Tdai-Service-Id": "default",
         };
+        const sanitizedMessages = messages.map((m) => ({
+            role: m.role,
+            content: (m.content || "").length > 8000 ? (m.content || "").slice(0, 7990) + "..." : (m.content || ""),
+        }));
         const payload = {
             team_id: this.teamId,
             agent_id: customAgentId || this.agentId,
             session_id: sessionId.startsWith("openclaw-") ? sessionId : `openclaw-${sessionId}`,
-            messages,
+            messages: sanitizedMessages,
         };
         return postJson(url, headers, payload, 6000);
     }

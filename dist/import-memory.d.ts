@@ -2,7 +2,7 @@
  * One-Shot Batch Importer: OpenClaw Local Memory -> TencentDB L0
  *
  * Reads ~/.openclaw/workspace/MEMORY.md and ~/.openclaw/workspace/memory/*.md
- * and imports all facts cleanly into central TencentDB for agent Leon.
+ * Automatically chunks large files (>7000 chars) to adhere to TencentDB limits.
  *
  * Run with: node /root/.openclaw/extensions/openclaw-memory-tencentdb/dist/import-memory.js
  */
