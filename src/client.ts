@@ -21,12 +21,12 @@ export class TencentDBClient {
   private agentId: string;
 
   constructor(config: TencentDBConfig) {
-    this.coreUrl = (config.coreUrl || "http://tencentdb.itsc.local:8420").replace(/\/+$/, "");
-    this.importUrl = (config.importUrl || "http://tencentdb.itsc.local:8125").replace(/\/+$/, "");
-    this.knowledgeUrl = (config.knowledgeUrl || "http://tencentdb.itsc.local:8424").replace(/\/+$/, "");
+    this.coreUrl = (config.coreUrl || "http://localhost:8420").replace(/\/+$/, "");
+    this.importUrl = (config.importUrl || "http://localhost:8125").replace(/\/+$/, "");
+    this.knowledgeUrl = (config.knowledgeUrl || "http://localhost:8424").replace(/\/+$/, "");
     this.userKey = config.userKey || process.env.TDAI_USER_KEY || "";
-    this.teamId = config.teamId || process.env.TDAI_TEAM_ID || "team-thpa5ncu0p";
-    this.agentId = config.agentId || process.env.TDAI_AGENT_ID || "agt-th8bvq00pv";
+    this.teamId = config.teamId || process.env.TDAI_TEAM_ID || "default";
+    this.agentId = config.agentId || process.env.TDAI_AGENT_ID || "default";
   }
 
   public getAgentId(): string {

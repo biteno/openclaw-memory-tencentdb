@@ -7,17 +7,17 @@
   "uiHints": {
     "coreUrl": {
       "label": "TencentDB Core URL",
-      "placeholder": "http://tencentdb.itsc.local:8420",
+      "placeholder": "http://localhost:8420",
       "help": "Base URL of TencentDB MemoryCore (:8420) for L0-L3 semantic search and skill recall."
     },
     "importUrl": {
       "label": "TencentDB Import URL",
-      "placeholder": "http://tencentdb.itsc.local:8125",
+      "placeholder": "http://localhost:8125",
       "help": "Base URL of TencentDB MemoryPanel (:8125) for turn synchronization (/api/v1/chat-memory/import)."
     },
     "knowledgeUrl": {
       "label": "TencentDB Knowledge URL",
-      "placeholder": "http://tencentdb.itsc.local:8424",
+      "placeholder": "http://localhost:8424",
       "help": "Base URL of TencentDB MemoryKnowledge (:8424) for Team-Wiki and Code-Graph search."
     },
     "userKey": {
@@ -28,12 +28,12 @@
     },
     "teamId": {
       "label": "Team ID",
-      "placeholder": "team-thpa5ncu0p",
+      "placeholder": "default",
       "help": "Team identifier / tenant namespace in TencentDB."
     },
     "agentId": {
       "label": "Agent ID",
-      "placeholder": "agt-th8bvq00pv",
+      "placeholder": "agt-your-agent-id",
       "help": "Unique Agent ID container assigned to this OpenClaw instance."
     },
     "autoRecall": {
@@ -61,22 +61,22 @@
     "properties": {
       "coreUrl": {
         "type": "string",
-        "default": "http://tencentdb.itsc.local:8420"
+        "default": "http://localhost:8420"
       },
       "importUrl": {
         "type": "string",
-        "default": "http://tencentdb.itsc.local:8125"
+        "default": "http://localhost:8125"
       },
       "knowledgeUrl": {
         "type": "string",
-        "default": "http://tencentdb.itsc.local:8424"
+        "default": "http://localhost:8424"
       },
       "userKey": {
         "type": "string"
       },
       "teamId": {
         "type": "string",
-        "default": "team-thpa5ncu0p"
+        "default": "default"
       },
       "agentId": {
         "type": "string"
