@@ -74,6 +74,9 @@ function extractText(val: any): string {
   if (typeof val.text === "string") return val.text.trim();
   if (typeof val.content === "string") return val.content.trim();
   if (typeof val.message === "string") return val.message.trim();
+  if (typeof val.finalAnswer === "string") return val.finalAnswer.trim();
+  if (typeof val.response === "string") return val.response.trim();
+  if (typeof val.output === "string") return val.output.trim();
   if (Array.isArray(val)) {
     return val
       .map((item) => extractText(item))
@@ -109,7 +112,7 @@ const memoryPlugin = {
     let fallbackLastPrompt = "";
     let lastSyncedSignature = "";
 
-    // ── 1. Auto-Recall Hook (before_agent_start / before_turn) ──────────
+    // ── 1. Auto-Recall Hook ────────────────────────────────────────────
     if (autoRecall) {
       const handleRecall = async (event: any, ctx: any) => {
         let prompt = extractText(event?.prompt || event?.content || event?.message || event?.text);
@@ -205,9 +208,48 @@ const memoryPlugin = {
       });
     }
 
-    // ── 2. Auto-Capture Hook (message_sent / agent_end / after_turn) ─────
+    // ── 2. Auto-Capture Hook ────────────────────────────────────────────
     if (autoCapture) {
-      const handleCapture = async (event: any, ctx: any) => {
+      const syncTurnToTencentDB = async (
+        sessionId: string,
+        userContent: string,
+        assistantContent: string,
+        triggerEvent: string,
+      ) => {
+        const cleanUser = userContent.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
+        const cleanAssistant = assistantContent.trim();
+
+        if (!cleanUser || !cleanAssistant) {
+          return;
+        }
+
+        const signature = `${sessionId}:::${cleanUser}:::${cleanAssistant}`;
+        if (signature === lastSyncedSignature) {
+          return; // Deduplicate
+        }
+        lastSyncedSignature = signature;
+
+        api.logger.info(
+          `[openclaw-memory-tencentdb] Syncing turn via [${triggerEvent}] to TencentDB for session: ${sessionId} (user: ${cleanUser.slice(0, 30)}...)`,
+        );
+
+        try {
+          await client.importTurn(sessionId, [
+            { role: "user", content: cleanUser },
+            { role: "assistant", content: cleanAssistant },
+          ]);
+          api.logger.info(
+            `[openclaw-memory-tencentdb] Successfully synced turn to TencentDB (session: ${sessionId})`,
+          );
+        } catch (err: any) {
+          api.logger.warn(
+            `[openclaw-memory-tencentdb] Turn sync failed: ${err.message || String(err)}`,
+          );
+        }
+      };
+
+      // Handler for agent completion events
+      const handleAgentCompletion = async (eventName: string, event: any, ctx: any) => {
         const sessionId =
           (ctx as any)?.sessionKey ||
           (ctx as any)?.sessionId ||
@@ -217,9 +259,10 @@ const memoryPlugin = {
         let userText = "";
         let assistantText = "";
 
-        // 1. Extract assistant text from event
+        // Direct fields
         assistantText = extractText(
-          event?.response ||
+          event?.finalAnswer ||
+            event?.response ||
             event?.output ||
             event?.text ||
             event?.content ||
@@ -227,7 +270,7 @@ const memoryPlugin = {
             event?.payload,
         );
 
-        // 2. Extract messages from array if present
+        // Messages array
         const rawMessages = event?.messages || event?.history || event?.conversation;
         if (Array.isArray(rawMessages) && rawMessages.length > 0) {
           for (let i = rawMessages.length - 1; i >= 0; i--) {
@@ -241,64 +284,33 @@ const memoryPlugin = {
             if ((role === "assistant" || role === "model" || role === "bot") && !assistantText) {
               assistantText = text;
             } else if ((role === "user" || role === "human") && !userText) {
-              userText = text.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
+              userText = text;
             }
 
             if (userText && assistantText) break;
           }
         }
 
-        // 3. Fallback user prompt from stored sessionPrompts
+        // Fallback user text
         if (!userText) {
-          if (typeof event?.prompt === "string" && event.prompt.trim()) {
-            userText = event.prompt.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
-          } else if (sessionPrompts.has(sessionId)) {
-            userText = sessionPrompts.get(sessionId) || "";
-          } else if (fallbackLastPrompt) {
-            userText = fallbackLastPrompt;
-          }
+          userText =
+            extractText(event?.prompt) ||
+            sessionPrompts.get(sessionId) ||
+            fallbackLastPrompt ||
+            "";
         }
 
-        // Clean user text
-        userText = userText.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
-        assistantText = assistantText.trim();
-
-        if (!userText || !assistantText) {
-          return;
+        if (userText && assistantText) {
+          await syncTurnToTencentDB(sessionId, userText, assistantText, eventName);
         }
-
-        const signature = `${sessionId}:::${userText}:::${assistantText}`;
-        if (signature === lastSyncedSignature) {
-          return; // Deduplicate
-        }
-        lastSyncedSignature = signature;
-
-        api.logger.info(
-          `[openclaw-memory-tencentdb] Syncing dialogue turn to TencentDB Panel for session: ${sessionId} (user: ${userText.slice(0, 30)}...)`,
-        );
-
-        client
-          .importTurn(sessionId, [
-            { role: "user", content: userText },
-            { role: "assistant", content: assistantText },
-          ])
-          .then((res) => {
-            api.logger.info(
-              `[openclaw-memory-tencentdb] Successfully synced turn to TencentDB (session: ${sessionId})`,
-            );
-          })
-          .catch((err: any) => {
-            api.logger.warn(
-              `[openclaw-memory-tencentdb] Background turn sync failed: ${err.message || String(err)}`,
-            );
-          });
       };
 
-      api.on("message_sent", handleCapture);
-      api.on("message_sending", handleCapture);
-      api.on("agent_end", handleCapture);
-      api.on("after_turn", handleCapture);
-      api.on("turn_end", handleCapture);
+      api.on("before_agent_finalize", (e: any, ctx: any) => handleAgentCompletion("before_agent_finalize", e, ctx));
+      api.on("agent_end", (e: any, ctx: any) => handleAgentCompletion("agent_end", e, ctx));
+      api.on("after_turn", (e: any, ctx: any) => handleAgentCompletion("after_turn", e, ctx));
+      api.on("turn_end", (e: any, ctx: any) => handleAgentCompletion("turn_end", e, ctx));
+      api.on("message_sent", (e: any, ctx: any) => handleAgentCompletion("message_sent", e, ctx));
+      api.on("message_sending", (e: any, ctx: any) => handleAgentCompletion("message_sending", e, ctx));
     }
 
     // ── 3. Register Explicit Tools ──────────────────────────────────────
