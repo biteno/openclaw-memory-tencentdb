@@ -118,9 +118,10 @@ export class TencentDBClient {
       "x-agent-id": customAgentId || this.agentId,
     };
 
+    const qStr = typeof query === "string" ? query : String(query || "");
     const payload = {
-      query: query.slice(0, 500),
-      limit,
+      query: qStr.slice(0, 500),
+      limit: typeof limit === "number" ? limit : 5,
     };
 
     return postJson<ConversationSearchResponse>(url, headers, payload, 4000);
@@ -137,9 +138,10 @@ export class TencentDBClient {
       "x-agent-id": customAgentId || this.agentId,
     };
 
+    const qStr = typeof query === "string" ? query : String(query || "");
     const payload = {
-      query: query.slice(0, 500),
-      limit,
+      query: qStr.slice(0, 500),
+      limit: typeof limit === "number" ? limit : 3,
     };
 
     return postJson<SkillSearchResponse>(url, headers, payload, 4000);
@@ -161,15 +163,16 @@ export class TencentDBClient {
       "X-Tdai-Service-Id": "default",
     };
 
-    const sanitizedMessages = messages.map((m) => ({
-      role: m.role,
-      content: (m.content || "").length > 8000 ? (m.content || "").slice(0, 7990) + "..." : (m.content || ""),
+    const sanitizedMessages = (Array.isArray(messages) ? messages : []).map((m) => ({
+      role: m?.role || "user",
+      content: (m?.content || "").length > 8000 ? (m?.content || "").slice(0, 7990) + "..." : (m?.content || ""),
     }));
 
+    const sId = typeof sessionId === "string" ? sessionId : String(sessionId || "default");
     const payload: TurnImportPayload = {
       team_id: this.teamId,
       agent_id: customAgentId || this.agentId,
-      session_id: sessionId.startsWith("openclaw-") ? sessionId : `openclaw-${sessionId}`,
+      session_id: sId.startsWith("openclaw-") ? sId : `openclaw-${sId}`,
       messages: sanitizedMessages,
     };
 
@@ -186,10 +189,11 @@ export class TencentDBClient {
       "x-tdai-service-id": this.teamId,
     };
 
+    const qStr = typeof query === "string" ? query : String(query || "");
     const payload: Record<string, any> = {
       team_id: this.teamId,
-      query,
-      limit,
+      query: qStr.slice(0, 500),
+      limit: typeof limit === "number" ? limit : 5,
     };
     if (wikiId) {
       payload.wiki_id = wikiId;
@@ -208,10 +212,11 @@ export class TencentDBClient {
       "x-tdai-service-id": this.teamId,
     };
 
+    const qStr = typeof query === "string" ? query : String(query || "");
     const payload = {
       team_id: this.teamId,
-      query,
-      limit,
+      query: qStr.slice(0, 500),
+      limit: typeof limit === "number" ? limit : 5,
     };
 
     return postJson<CodeGraphSearchResponse>(url, headers, payload, 4000);

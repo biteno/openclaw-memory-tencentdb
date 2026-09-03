@@ -117,6 +117,43 @@ function extractFallbackText(val: any): string {
   return "";
 }
 
+function parseToolQueryAndLimit(args: any, defaultLimit = 5): { query: string; limit: number; wikiId?: string } {
+  let parsed = args;
+  if (typeof args === "string") {
+    try {
+      parsed = JSON.parse(args);
+    } catch {
+      return { query: args.trim(), limit: defaultLimit };
+    }
+  }
+
+  if (!parsed || typeof parsed !== "object") {
+    return { query: "", limit: defaultLimit };
+  }
+
+  const queryCandidate =
+    parsed.query ||
+    parsed.q ||
+    parsed.searchTerm ||
+    parsed.search ||
+    parsed.text ||
+    parsed.prompt ||
+    parsed.keyword ||
+    parsed.name ||
+    parsed.params?.query ||
+    parsed.params?.q ||
+    parsed.params?.searchTerm ||
+    parsed.params?.search ||
+    "";
+
+  const query = typeof queryCandidate === "string" ? queryCandidate.trim() : String(queryCandidate || "").trim();
+  const limitVal = parsed.limit ?? parsed.params?.limit;
+  const limit = typeof limitVal === "number" ? limitVal : defaultLimit;
+  const wikiId = parsed.wiki_id || parsed.wikiId || parsed.params?.wiki_id || parsed.params?.wikiId;
+
+  return { query, limit, wikiId };
+}
+
 const memoryPlugin = {
   id: "openclaw-memory-tencentdb",
   name: "TencentDB Agent Memory (Remote)",
@@ -157,11 +194,13 @@ const memoryPlugin = {
           try {
             const convRes = await client.searchConversation(prompt, maxRecallResults);
             const messages = convRes?.data?.messages || [];
-            const validMessages = messages.filter((m) => (m.score ?? 1) >= scoreThreshold && m.content);
+            const validMessages = Array.isArray(messages)
+              ? messages.filter((m) => m && (m.score ?? 1) >= scoreThreshold && m.content)
+              : [];
 
             if (validMessages.length > 0) {
               const lines = validMessages.map((m) => {
-                const clean = m.content.trim();
+                const clean = String(m.content || "").trim();
                 const snippet = clean.length > 300 ? `${clean.slice(0, 297)}...` : clean;
                 return `- ${snippet}`;
               });
@@ -175,9 +214,11 @@ const memoryPlugin = {
           try {
             const skillRes = await client.searchSkills(prompt, 2);
             const items = skillRes?.data?.items || [];
-            if (items.length > 0) {
-              const lines = items.map((item) => {
-                const snippet = (item.snippet || "").replace(/<[^>]+>/g, "").trim();
+            const validItems = Array.isArray(items) ? items.filter((item) => item && item.name) : [];
+
+            if (validItems.length > 0) {
+              const lines = validItems.map((item) => {
+                const snippet = String(item.snippet || "").replace(/<[^>]+>/g, "").trim();
                 return `- **${item.name}**: ${item.description || ""} (${snippet.slice(0, 200)})`;
               });
               recalledSections.push(`### Hinterlegte Skills & Dokumente (TencentDB):\n${lines.join("\n")}`);
@@ -281,12 +322,16 @@ const memoryPlugin = {
         query: Type.String({ description: "Suchbegriff oder Frage" }),
         limit: Type.Optional(Type.Integer({ description: "Maximale Anzahl Ergebnisse (Standard: 5)", default: 5 })),
       }),
-      execute: async (args: { query: string; limit?: number }) => {
+      execute: async (rawArgs: any) => {
         try {
-          const res = await client.searchConversation(args.query, args.limit || 5);
+          const { query, limit } = parseToolQueryAndLimit(rawArgs, 5);
+          if (!query) {
+            return "Bitte gib einen Suchbegriff (query) an.";
+          }
+          const res = await client.searchConversation(query, limit);
           const msgs = res?.data?.messages || [];
-          if (msgs.length === 0) {
-            return `Keine Konversationen zu '${args.query}' gefunden.`;
+          if (!Array.isArray(msgs) || msgs.length === 0) {
+            return `Keine Konversationen zu '${query}' gefunden.`;
           }
           return JSON.stringify(msgs, null, 2);
         } catch (err: any) {
@@ -303,12 +348,16 @@ const memoryPlugin = {
         query: Type.String({ description: "Suchbegriff oder Name des Skills" }),
         limit: Type.Optional(Type.Integer({ description: "Maximale Anzahl Ergebnisse (Standard: 5)", default: 5 })),
       }),
-      execute: async (args: { query: string; limit?: number }) => {
+      execute: async (rawArgs: any) => {
         try {
-          const res = await client.searchSkills(args.query, args.limit || 5);
+          const { query, limit } = parseToolQueryAndLimit(rawArgs, 5);
+          if (!query) {
+            return "Bitte gib einen Suchbegriff (query) an.";
+          }
+          const res = await client.searchSkills(query, limit);
           const items = res?.data?.items || [];
-          if (items.length === 0) {
-            return `Keine Skills zu '${args.query}' gefunden.`;
+          if (!Array.isArray(items) || items.length === 0) {
+            return `Keine Skills zu '${query}' gefunden.`;
           }
           return JSON.stringify(items, null, 2);
         } catch (err: any) {
@@ -326,9 +375,13 @@ const memoryPlugin = {
         wiki_id: Type.Optional(Type.String({ description: "Optionale Wiki-ID" })),
         limit: Type.Optional(Type.Integer({ description: "Maximale Anzahl (Standard: 5)", default: 5 })),
       }),
-      execute: async (args: { query: string; wiki_id?: string; limit?: number }) => {
+      execute: async (rawArgs: any) => {
         try {
-          const res = await client.searchWiki(args.query, args.limit || 5, args.wiki_id);
+          const { query, limit, wikiId } = parseToolQueryAndLimit(rawArgs, 5);
+          if (!query) {
+            return "Bitte gib einen Suchbegriff (query) an.";
+          }
+          const res = await client.searchWiki(query, limit, wikiId);
           return JSON.stringify(res?.data || res, null, 2);
         } catch (err: any) {
           return `Fehler bei Wiki-Suche: ${err.message || String(err)}`;
@@ -344,9 +397,13 @@ const memoryPlugin = {
         query: Type.String({ description: "Funktions- oder Symbolname" }),
         limit: Type.Optional(Type.Integer({ description: "Maximale Anzahl (Standard: 5)", default: 5 })),
       }),
-      execute: async (args: { query: string; limit?: number }) => {
+      execute: async (rawArgs: any) => {
         try {
-          const res = await client.searchCodeGraph(args.query, args.limit || 5);
+          const { query, limit } = parseToolQueryAndLimit(rawArgs, 5);
+          if (!query) {
+            return "Bitte gib einen Symbolnamen oder Suchbegriff (query) an.";
+          }
+          const res = await client.searchCodeGraph(query, limit);
           return JSON.stringify(res?.data || res, null, 2);
         } catch (err: any) {
           return `Fehler bei CodeGraph-Suche: ${err.message || String(err)}`;
