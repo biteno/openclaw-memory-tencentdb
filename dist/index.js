@@ -149,12 +149,14 @@ const memoryPlugin = {
                 }
                 try {
                     const recalledSections = [];
-                    // 1. Search conversation history (L0/L1)
+                    // 1. Search conversation history & distilled facts (L0-L3)
                     try {
                         const convRes = await client.searchConversation(prompt, maxRecallResults);
                         const messages = convRes?.data?.messages || [];
                         const validMessages = Array.isArray(messages)
-                            ? messages.filter((m) => m && (m.score ?? 1) >= scoreThreshold && m.content)
+                            ? messages.filter((m) => m &&
+                                (m.score === undefined || m.score > 0.01 || (m.score ?? 1) >= scoreThreshold) &&
+                                m.content)
                             : [];
                         if (validMessages.length > 0) {
                             const lines = validMessages.map((m) => {

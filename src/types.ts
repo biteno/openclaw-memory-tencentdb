@@ -16,10 +16,11 @@ export interface TencentDBConfig {
 }
 
 export interface ConversationMessage {
-  role: "user" | "assistant" | "system";
+  role: "user" | "assistant" | "system" | string;
   content: string;
   score?: number;
   created_at?: string;
+  timestamp?: string;
   id?: string;
 }
 

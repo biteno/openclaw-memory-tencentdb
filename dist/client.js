@@ -80,21 +80,90 @@ export class TencentDBClient {
         return Boolean(this.userKey && this.coreUrl);
     }
     /**
-     * Search past conversation memories (L0/L1) via Core API
+     * Search past conversation memories & distilled facts (L0-L3)
+     * Queries both the Panel dedicated agent block (/api/v1/chat-memory/search on port 8125)
+     * and the Core conversational vector index (/v2/conversation/search on port 8420),
+     * merging the results so no memories are missed regardless of team partitioning.
      */
     async searchConversation(query, limit = 5, customAgentId) {
-        const url = `${this.coreUrl}/v2/conversation/search`;
-        const headers = {
-            Authorization: `Bearer ${this.userKey}`,
-            "x-tdai-service-id": this.teamId,
-            "x-agent-id": customAgentId || this.agentId,
-        };
         const qStr = typeof query === "string" ? query : String(query || "");
-        const payload = {
-            query: qStr.slice(0, 500),
-            limit: typeof limit === "number" ? limit : 5,
+        const safeLimit = typeof limit === "number" ? limit : 5;
+        const targetAgentId = customAgentId || this.agentId;
+        const messages = [];
+        const seenContents = new Set();
+        // 1. Search Panel Agent Block (:8125/api/v1/chat-memory/search)
+        try {
+            const panelUrl = `${this.importUrl}/api/v1/chat-memory/search`;
+            const panelHeaders = {
+                "X-Tdai-User-Key": this.userKey,
+                "X-Tdai-Service-Id": "default",
+            };
+            const panelPayload = {
+                block_id: `chat_memory-${this.teamId}-${targetAgentId}`,
+                query: qStr.slice(0, 500),
+                limit: safeLimit,
+            };
+            const panelRes = await postJson(panelUrl, panelHeaders, panelPayload, 6000);
+            const items = panelRes?.data?.items || [];
+            if (Array.isArray(items)) {
+                for (const it of items) {
+                    const body = (it?.body || it?.content || "").trim();
+                    if (body && !seenContents.has(body)) {
+                        seenContents.add(body);
+                        messages.push({
+                            id: it?.id || `panel-${Math.random().toString(36).slice(2, 9)}`,
+                            role: it?.title || "memory",
+                            content: body,
+                            score: typeof it?.score === "number" ? it.score : 1.0,
+                            timestamp: it?.created_at,
+                        });
+                    }
+                }
+            }
+        }
+        catch {
+            // Panel search error / fallback to core
+        }
+        // 2. Search Core (:8420/v2/conversation/search)
+        try {
+            const coreUrl = `${this.coreUrl}/v2/conversation/search`;
+            const coreHeaders = {
+                Authorization: `Bearer ${this.userKey}`,
+                "x-tdai-service-id": this.teamId,
+                "x-agent-id": targetAgentId,
+            };
+            const corePayload = {
+                query: qStr.slice(0, 500),
+                limit: safeLimit,
+            };
+            const coreRes = await postJson(coreUrl, coreHeaders, corePayload, 5000);
+            const coreMsgs = coreRes?.data?.messages || [];
+            if (Array.isArray(coreMsgs)) {
+                for (const m of coreMsgs) {
+                    const clean = (m?.content || "").trim();
+                    if (clean && !seenContents.has(clean)) {
+                        seenContents.add(clean);
+                        messages.push({
+                            id: m?.id || `core-${Math.random().toString(36).slice(2, 9)}`,
+                            role: m?.role || "user",
+                            content: clean,
+                            score: typeof m?.score === "number" ? m.score : 1.0,
+                            timestamp: m?.timestamp,
+                        });
+                    }
+                }
+            }
+        }
+        catch {
+            // Core search fallback
+        }
+        return {
+            code: 0,
+            message: "ok",
+            data: {
+                messages: messages.slice(0, safeLimit),
+            },
         };
-        return postJson(url, headers, payload, 4000);
     }
     /**
      * Search skills and distilled knowledge via Core API
