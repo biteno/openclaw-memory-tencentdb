@@ -277,17 +277,21 @@ const memoryPlugin = {
                     return; // Already synced
                 }
                 syncedTurnSignatures.add(signature);
-                api.logger.info(`[openclaw-memory-tencentdb] [agent_end] Syncing turn to TencentDB (user: "${lastUserText.slice(0, 30)}...", assistant: "${lastAssistantText.slice(0, 30)}...")`);
-                try {
-                    await client.importTurn(`openclaw-${sKey}`, [
+                api.logger.info(`[openclaw-memory-tencentdb] [agent_end] Syncing turn to TencentDB in background (user: "${lastUserText.slice(0, 30)}...", assistant: "${lastAssistantText.slice(0, 30)}...")`);
+                // Run import asynchronously (fire-and-forget) so OpenClaw never blocks on session finalization
+                setImmediate(() => {
+                    client
+                        .importTurn(`openclaw-${sKey}`, [
                         { role: "user", content: lastUserText },
                         { role: "assistant", content: lastAssistantText },
-                    ]);
-                    api.logger.info(`[openclaw-memory-tencentdb] [agent_end] Successfully synced turn to TencentDB L0!`);
-                }
-                catch (err) {
-                    api.logger.warn(`[openclaw-memory-tencentdb] [agent_end] Sync failed: ${err.message || String(err)}`);
-                }
+                    ])
+                        .then(() => {
+                        api.logger.info(`[openclaw-memory-tencentdb] [agent_end] Successfully synced turn to TencentDB L0!`);
+                    })
+                        .catch((err) => {
+                        api.logger.warn(`[openclaw-memory-tencentdb] [agent_end] Sync failed: ${err.message || String(err)}`);
+                    });
+                });
             });
         }
         // ── 3. Tools ────────────────────────────────────────────────────────
