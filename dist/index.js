@@ -33,14 +33,53 @@ function resolvePluginConfig(api) {
     }
     return api.pluginConfig || api.config || {};
 }
-function extractMessageText(msg) {
-    if (!msg)
+function extractMessageText(msg, ctx) {
+    if (!msg && !ctx)
         return "";
     if (typeof msg === "string")
         return msg.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
+    // If msg is an object, check all potential prompt/content fields
+    const candidates = [
+        msg?.prompt,
+        msg?.input,
+        msg?.userMessage,
+        msg?.message,
+        msg?.content,
+        msg?.text,
+        msg?.query,
+        ctx?.prompt,
+        ctx?.input,
+        ctx?.userMessage,
+        ctx?.message,
+        ctx?.content,
+    ];
+    for (const cand of candidates) {
+        if (typeof cand === "string" && cand.trim().length > 0) {
+            return cand.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
+        }
+    }
+    // Check array of messages in event or ctx
+    const msgArray = Array.isArray(msg?.messages)
+        ? msg.messages
+        : Array.isArray(ctx?.messages)
+            ? ctx.messages
+            : Array.isArray(msg)
+                ? msg
+                : [];
+    if (msgArray.length > 0) {
+        for (let i = msgArray.length - 1; i >= 0; i--) {
+            const item = msgArray[i];
+            const role = String(item?.role || "").toLowerCase();
+            if (role === "user" || role === "human" || !item?.role) {
+                const text = extractMessageText(item);
+                if (text)
+                    return text;
+            }
+        }
+    }
+    const rawContent = msg?.content !== undefined ? msg.content : msg?.text !== undefined ? msg.text : msg?.parts;
     const textParts = [];
     const thoughtParts = [];
-    const rawContent = msg.content !== undefined ? msg.content : msg.text !== undefined ? msg.text : msg.message;
     if (typeof rawContent === "string") {
         textParts.push(rawContent);
     }
@@ -63,15 +102,6 @@ function extractMessageText(msg) {
             }
         }
     }
-    else if (Array.isArray(msg.parts)) {
-        for (const part of msg.parts) {
-            if (typeof part === "string")
-                textParts.push(part);
-            else if (part && typeof part.text === "string")
-                textParts.push(part.text);
-        }
-    }
-    // If text blocks exist, prefer them over thought traces
     const resultText = textParts.length > 0 ? textParts.join("\n") : thoughtParts.join("\n");
     return resultText.replace(/<tencentdb-memory>[\s\S]*?<\/tencentdb-memory>/g, "").trim();
 }
@@ -140,9 +170,12 @@ const memoryPlugin = {
         // ── 1. Auto-Recall Hook (before_agent_start) ───────────────────────
         if (autoRecall) {
             api.on("before_agent_start", async (event, ctx) => {
-                const prompt = extractMessageText(event);
-                if (!prompt || prompt.length < 4)
+                const prompt = extractMessageText(event, ctx);
+                api.logger.info(`[openclaw-memory-tencentdb] [Hook:before_agent_start] Fired (prompt: "${prompt.slice(0, 50)}...", team: ${client.getTeamId()}, agent: ${client.getAgentId()})`);
+                if (!prompt || prompt.length < 3) {
+                    api.logger.info(`[openclaw-memory-tencentdb] [Hook:before_agent_start] Prompt too short or empty, skipping.`);
                     return;
+                }
                 // Skip trivial messages
                 if (/^(hi|hello|hey|ok|danke|thx|thanks|hallo|ja|nein|yes|no)$/i.test(prompt)) {
                     return;
@@ -151,17 +184,15 @@ const memoryPlugin = {
                     const recalledSections = [];
                     // 1. Search conversation history & distilled facts (L0-L3)
                     try {
+                        api.logger.info(`[openclaw-memory-tencentdb] [Hook:before_agent_start] Querying conversation memory for "${prompt.slice(0, 40)}..."`);
                         const convRes = await client.searchConversation(prompt, maxRecallResults);
                         const messages = convRes?.data?.messages || [];
-                        const validMessages = Array.isArray(messages)
-                            ? messages.filter((m) => m &&
-                                (m.score === undefined || m.score > 0.01 || (m.score ?? 1) >= scoreThreshold) &&
-                                m.content)
-                            : [];
+                        const validMessages = Array.isArray(messages) ? messages.filter((m) => m && m.content) : [];
+                        api.logger.info(`[openclaw-memory-tencentdb] [Hook:before_agent_start] Conversation search returned ${validMessages.length} items.`);
                         if (validMessages.length > 0) {
                             const lines = validMessages.map((m) => {
                                 const clean = String(m.content || "").trim();
-                                const snippet = clean.length > 300 ? `${clean.slice(0, 297)}...` : clean;
+                                const snippet = clean.length > 400 ? `${clean.slice(0, 397)}...` : clean;
                                 return `- ${snippet}`;
                             });
                             recalledSections.push(`### Relevante Gesprächserinnerungen (TencentDB):\n${lines.join("\n")}`);
@@ -187,10 +218,11 @@ const memoryPlugin = {
                         api.logger.warn(`[openclaw-memory-tencentdb] Skill search failed: ${err.message || String(err)}`);
                     }
                     if (recalledSections.length === 0) {
+                        api.logger.info(`[openclaw-memory-tencentdb] [Hook:before_agent_start] No memories found for prompt.`);
                         return;
                     }
                     const contextBlock = `<tencentdb-memory>\n${recalledSections.join("\n\n")}\n</tencentdb-memory>`;
-                    api.logger.info(`[openclaw-memory-tencentdb] Prefetched ${recalledSections.length} memory sections into context`);
+                    api.logger.info(`[openclaw-memory-tencentdb] [Hook:before_agent_start] Successfully injected ${recalledSections.length} memory sections into context (${contextBlock.length} chars)`);
                     return {
                         prependContext: contextBlock,
                     };
@@ -270,17 +302,20 @@ const memoryPlugin = {
             execute: async (rawArgs) => {
                 try {
                     const { query, limit } = parseToolQueryAndLimit(rawArgs, 5);
+                    api.logger.info(`[openclaw-memory-tencentdb] [Tool:tdai_conversation_search] Executing query: "${query}" (limit: ${limit})`);
                     if (!query) {
                         return "Bitte gib einen Suchbegriff (query) an.";
                     }
                     const res = await client.searchConversation(query, limit);
                     const msgs = res?.data?.messages || [];
+                    api.logger.info(`[openclaw-memory-tencentdb] [Tool:tdai_conversation_search] Query "${query}" returned ${Array.isArray(msgs) ? msgs.length : 0} hits.`);
                     if (!Array.isArray(msgs) || msgs.length === 0) {
                         return `Keine Konversationen zu '${query}' gefunden.`;
                     }
                     return JSON.stringify(msgs, null, 2);
                 }
                 catch (err) {
+                    api.logger.warn(`[openclaw-memory-tencentdb] Tool execution error: ${err.message || String(err)}`);
                     return `Fehler bei Konversationssuche: ${err.message || String(err)}`;
                 }
             },
