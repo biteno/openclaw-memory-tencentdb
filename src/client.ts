@@ -109,8 +109,9 @@ export class TencentDBClient {
 
   /**
    * Search past conversation memories & distilled facts (L0-L3)
-   * Queries both the Panel dedicated agent block (/api/v1/chat-memory/search on port 8125)
-   * and the Core conversational vector index (/v2/conversation/search on port 8420),
+   * Queries both L0 (raw messages, full markdown tables) and L1 (distilled facts)
+   * on the Panel dedicated agent block (/api/v1/chat-memory/search on port 8125)
+   * as well as the Core conversational vector index (/v2/conversation/search on port 8420),
    * merging the results so no memories are missed regardless of team partitioning.
    */
   async searchConversation(query: string, limit = 5, customAgentId?: string): Promise<ConversationSearchResponse> {
@@ -121,28 +122,58 @@ export class TencentDBClient {
     const messages: Array<{ id: string; role: string; content: string; score?: number; timestamp?: string }> = [];
     const seenContents = new Set<string>();
 
-    // 1. Search Panel Agent Block (:8125/api/v1/chat-memory/search)
+    const panelUrl = `${this.importUrl}/api/v1/chat-memory/search`;
+    const panelHeaders = {
+      "X-Tdai-User-Key": this.userKey,
+      "X-Tdai-Service-Id": "default",
+    };
+
+    // 1. Search Panel L0 Raw Messages (Detailed Markdown, Tables, Transcripts)
     try {
-      const panelUrl = `${this.importUrl}/api/v1/chat-memory/search`;
-      const panelHeaders = {
-        "X-Tdai-User-Key": this.userKey,
-        "X-Tdai-Service-Id": "default",
-      };
-      const panelPayload = {
+      const l0Payload = {
         block_id: `chat_memory-${this.teamId}-${targetAgentId}`,
         query: qStr.slice(0, 500),
+        layer: "L0",
         limit: safeLimit,
       };
-
-      const panelRes = await postJson<any>(panelUrl, panelHeaders, panelPayload, 6000);
-      const items = panelRes?.data?.items || [];
-      if (Array.isArray(items)) {
-        for (const it of items) {
+      const l0Res = await postJson<any>(panelUrl, panelHeaders, l0Payload, 6000);
+      const l0Items = l0Res?.data?.items || [];
+      if (Array.isArray(l0Items)) {
+        for (const it of l0Items) {
           const body = (it?.body || it?.content || "").trim();
           if (body && !seenContents.has(body)) {
             seenContents.add(body);
             messages.push({
-              id: it?.id || `panel-${Math.random().toString(36).slice(2, 9)}`,
+              id: it?.id || `l0-${Math.random().toString(36).slice(2, 9)}`,
+              role: it?.title || it?.role || "assistant",
+              content: body,
+              score: typeof it?.score === "number" ? it.score : 1.0,
+              timestamp: it?.created_at,
+            });
+          }
+        }
+      }
+    } catch {
+      // Ignore L0 search error
+    }
+
+    // 2. Search Panel L1 Distilled Facts (Episodic, Persona, Principles)
+    try {
+      const l1Payload = {
+        block_id: `chat_memory-${this.teamId}-${targetAgentId}`,
+        query: qStr.slice(0, 500),
+        layer: "L1",
+        limit: safeLimit,
+      };
+      const l1Res = await postJson<any>(panelUrl, panelHeaders, l1Payload, 6000);
+      const l1Items = l1Res?.data?.items || [];
+      if (Array.isArray(l1Items)) {
+        for (const it of l1Items) {
+          const body = (it?.body || it?.content || "").trim();
+          if (body && !seenContents.has(body)) {
+            seenContents.add(body);
+            messages.push({
+              id: it?.id || `l1-${Math.random().toString(36).slice(2, 9)}`,
               role: it?.title || "memory",
               content: body,
               score: typeof it?.score === "number" ? it.score : 1.0,
@@ -152,10 +183,10 @@ export class TencentDBClient {
         }
       }
     } catch {
-      // Panel search error / fallback to core
+      // Ignore L1 search error
     }
 
-    // 2. Search Core (:8420/v2/conversation/search)
+    // 3. Search Core (:8420/v2/conversation/search)
     try {
       const coreUrl = `${this.coreUrl}/v2/conversation/search`;
       const coreHeaders = {

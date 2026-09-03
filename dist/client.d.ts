@@ -17,8 +17,9 @@ export declare class TencentDBClient {
     isConfigured(): boolean;
     /**
      * Search past conversation memories & distilled facts (L0-L3)
-     * Queries both the Panel dedicated agent block (/api/v1/chat-memory/search on port 8125)
-     * and the Core conversational vector index (/v2/conversation/search on port 8420),
+     * Queries both L0 (raw messages, full markdown tables) and L1 (distilled facts)
+     * on the Panel dedicated agent block (/api/v1/chat-memory/search on port 8125)
+     * as well as the Core conversational vector index (/v2/conversation/search on port 8420),
      * merging the results so no memories are missed regardless of team partitioning.
      */
     searchConversation(query: string, limit?: number, customAgentId?: string): Promise<ConversationSearchResponse>;
