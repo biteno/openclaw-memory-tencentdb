@@ -278,7 +278,7 @@ export class TencentDBClient {
       messages: sanitizedMessages,
     };
 
-    return postJson<TurnImportResponse>(url, headers, payload, 6000);
+    return postJson<TurnImportResponse>(url, headers, payload, 15000);
   }
 
   /**

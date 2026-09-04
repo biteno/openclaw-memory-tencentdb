@@ -235,7 +235,7 @@ export class TencentDBClient {
             session_id: sId.startsWith("openclaw-") ? sId : `openclaw-${sId}`,
             messages: sanitizedMessages,
         };
-        return postJson(url, headers, payload, 6000);
+        return postJson(url, headers, payload, 15000);
     }
     /**
      * Search Team Wiki documents on port 8424
